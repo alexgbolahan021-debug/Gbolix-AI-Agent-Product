@@ -1,0 +1,41 @@
+services:
+  - type: web
+    name: gbolix-ai-agent-engine
+    runtime: node
+    plan: starter
+    buildCommand: npm install && npm run build
+    startCommand: npm run migrate && npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DEFAULT_MODEL
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_BASE_URL
+        sync: false
+      - key: DATABASE_URL
+        fromDatabase:
+          name: gbolix-ai-agent-db
+          property: connectionString
+      - key: CREDIT_MODE
+        value: platform
+      - key: GBOLIX_PLATFORM_URL
+        sync: false
+      - key: GBOLIX_PLATFORM_TOKEN
+        sync: false
+      - key: AGENT_JWT_SECRET
+        sync: false
+      - key: CLERK_JWKS_URL
+        sync: false
+      - key: AGENT_ADMIN_USER_IDS
+        sync: false
+      - key: CORS_ORIGINS
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+
+databases:
+  - name: gbolix-ai-agent-db
+    plan: basic-256mb
