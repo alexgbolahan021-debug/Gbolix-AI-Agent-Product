@@ -19,7 +19,7 @@ npm run dev
 
 Without `DATABASE_URL` or a configured provider key, the engine uses in-memory storage and a deterministic response adapter for local smoke tests. This mode is not suitable for production because data is lost when the process restarts. For a real free-tier provider, set `AI_PROVIDER=gemini`, add `GEMINI_API_KEY`, and use `DEFAULT_MODEL=gemini-2.5-flash-lite`.
 
-With a Postgres database, run `npm run migrate` before `npm run start`. The service binds to `0.0.0.0` and uses `PORT` when supplied by the host.
+With a Postgres database, run `npm run migrate` before `npm run start`. The service binds to `0.0.0.0` and uses `PORT` when supplied by the host. In production, `DATABASE_URL` is mandatory: the engine refuses to start with temporary memory storage unless `ALLOW_MEMORY_STORAGE=true` is explicitly set. This prevents a future redeploy from silently starting a fresh empty agent store.
 
 ## AI providers
 
@@ -75,7 +75,7 @@ The widget calls `POST /v1/agents/{agentId}/messages`. The widget is only a pres
 
 ## Credits and the Gbolix site
 
-For production, set `CREDIT_MODE=platform`. Before a billable response, the engine calls the site’s internal credit-authorization endpoint. After a successful response, it sends an idempotent usage event. If the model or a tool fails, the engine releases the reservation and writes a zero-credit failed event.
+For production, attach the Render Postgres database from `render.yaml` and confirm `DATABASE_URL` is present before deploying. The database stores agents, knowledge, conversations, deployments, API keys, and usage events, so normal code deployments will not delete customer data. For production, set `CREDIT_MODE=platform`. Before a billable response, the engine calls the site’s internal credit-authorization endpoint. After a successful response, it sends an idempotent usage event. If the model or a tool fails, the engine releases the reservation and writes a zero-credit failed event.
 
 The site must provide the internal endpoints described in `ARCHITECTURE.md`:
 

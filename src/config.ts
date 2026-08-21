@@ -7,6 +7,7 @@ function list(value: string | undefined): string[] {
 export const config = {
   port: Number(process.env.PORT ?? 4100),
   databaseUrl: process.env.DATABASE_URL,
+  allowMemoryStorage: process.env.ALLOW_MEMORY_STORAGE === "true",
   aiProvider: process.env.AI_PROVIDER ?? "openai",
   openAiApiKey: process.env.OPENAI_API_KEY,
   openAiBaseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",

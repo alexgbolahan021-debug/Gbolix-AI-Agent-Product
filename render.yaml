@@ -29,6 +29,8 @@ services:
         fromDatabase:
           name: gbolix-ai-agent-db
           property: connectionString
+      - key: ALLOW_MEMORY_STORAGE
+        value: "false"
       - key: CREDIT_MODE
         value: platform
       - key: GBOLIX_PLATFORM_URL

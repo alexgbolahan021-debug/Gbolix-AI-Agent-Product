@@ -179,7 +179,10 @@ function apiKeyRow(row: any): ApiKeyRecord { return { id: row.id, agentId: row.a
 function usageRow(row: any): UsageEvent { return { requestId: row.request_id, workspaceId: row.workspace_id, agentId: row.agent_id, conversationId: row.conversation_id, model: row.model, inputTokens: row.input_tokens, outputTokens: row.output_tokens, toolCalls: row.tool_calls, credits: row.credits, status: row.status, channel: row.channel, createdAt: new Date(row.created_at).toISOString() }; }
 
 export async function createStore(): Promise<Store> {
-  if (!config.databaseUrl) return new MemoryStore();
+  if (!config.databaseUrl) {
+    if (process.env.NODE_ENV === "production" && !config.allowMemoryStorage) throw new Error("DATABASE_URL is required in production. Refusing to start with temporary in-memory storage.");
+    return new MemoryStore();
+  }
   const pool = new Pool({ connectionString: config.databaseUrl, ssl: config.databaseUrl.includes("localhost") ? false : { rejectUnauthorized: false } });
   await ensureSchema(pool);
   return new PostgresStore(pool);
