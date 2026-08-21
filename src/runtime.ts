@@ -32,7 +32,8 @@ export class AgentRuntime {
     try {
       const knowledge = await this.store.listKnowledge(agent.id, identity.workspaceId);
       const history = await this.store.listMessages(currentConversation.id);
-      const system = buildSystemPrompt(agent, knowledge.map((item) => `### ${item.title}\n${item.content}`).join("\n\n"));
+      const retrievedKnowledge = selectKnowledge(knowledge, input.message);
+      const system = buildSystemPrompt(agent, retrievedKnowledge.map((item) => `### ${item.title}\n${item.content}`).join("\n\n"));
       const messages: ChatMessage[] = [{ role: "system", content: system }, ...history.slice(-24).map((item) => ({ role: item.role, content: item.content, ...(item.toolName ? { name: item.toolName } : {}) }))];
       const tools = agent.enabledTools.map((name) => BUILTIN_TOOLS[name]).filter(Boolean);
       let completion = await complete({ model: agent.model || config.defaultModel, messages, tools });
@@ -64,6 +65,8 @@ export class AgentRuntime {
     }
   }
 }
+
+function selectKnowledge<T extends { title: string; content: string }>(sources: T[], query: string) { const terms = new Set(query.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2)); if (!terms.size || sources.length <= 8) return sources.slice(0, 8); return sources.map((source) => ({ source, score: [...terms].reduce((score, term) => score + (source.title.toLowerCase().includes(term) ? 3 : 0) + (source.content.toLowerCase().includes(term) ? 1 : 0), 0) })).sort((a, b) => b.score - a.score).slice(0, 8).map((item) => item.source); }
 
 function buildSystemPrompt(agent: { name: string; instructions: string; tone: string; welcomeMessage: string }, knowledge: string): string {
   return [`You are ${agent.name}, a business AI agent powered by Gbolix.`, `Follow these business instructions exactly:\n${agent.instructions}`, `Use this tone: ${agent.tone}.`, "Never invent business facts. If the knowledge does not answer a question, say so and offer a human handoff.", "Only use tools that are explicitly enabled. Do not claim an action happened unless a tool result confirms it.", `If the visitor asks for a human, cannot be helped safely, or expresses a complaint, offer a human handoff.`, `Welcome message: ${agent.welcomeMessage}`, knowledge ? `Knowledge:\n${knowledge}` : "Knowledge: No business knowledge has been added yet."].join("\n\n");
