@@ -143,6 +143,7 @@ export type Store = {
   addUsageEvent(event: UsageEvent): Promise<UsageEvent>;
   listUsage(agentId: string, workspaceId: string, limit: number): Promise<UsageEvent[]>;
   addAuditEvent(event: Omit<AuditEvent, "id" | "createdAt">): Promise<AuditEvent>;
+  listAudit(workspaceId: string, limit: number): Promise<AuditEvent[]>;
   adminOverview(): Promise<Record<string, number>>;
   adminCustomers(limit: number): Promise<AdminCustomer[]>;
   adminAgents(limit: number): Promise<AdminAgent[]>;
