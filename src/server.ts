@@ -15,7 +15,6 @@ const app = express();
 
 app.use(async (request, response, next) => {
   const origin = request.header("origin");
-  if (request.method === "OPTIONS" && origin) return allowCors(request, response, next, origin);
   if (!origin || config.corsOrigins.length === 0 || config.corsOrigins.includes(origin)) return allowCors(request, response, next, origin);
   const token = bearerToken(request);
   const deployment = token ? await store.getDeploymentByToken(token).catch(() => undefined) : undefined;
