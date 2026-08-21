@@ -22,7 +22,7 @@ export const config = {
   agentJwtSecret: process.env.AGENT_JWT_SECRET,
   clerkSecretKey: process.env.CLERK_SECRET_KEY,
   adminUserIds: new Set(list(process.env.AGENT_ADMIN_USER_IDS)),
-  corsOrigins: list(process.env.CORS_ORIGINS),
+  corsOrigins: list(process.env.CORS_ORIGINS || "https://gbolix.site,https://www.gbolix.site"),
   maxToolRounds: Number(process.env.MAX_TOOL_ROUNDS ?? 3),
   localCredits: Number(process.env.LOCAL_CREDITS ?? 100000),
 };
