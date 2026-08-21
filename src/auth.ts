@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { verifyToken as verifyClerkToken } from "@clerk/backend";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { config } from "./config.js";
 import { hash } from "./store.js";
@@ -31,6 +32,10 @@ async function verifyIdentityToken(token: string): Promise<Identity> {
   if (config.agentJwtSecret) {
     const verified = await jwtVerify(token, new TextEncoder().encode(config.agentJwtSecret), { algorithms: ["HS256"] });
     return claimsToIdentity(verified.payload);
+  }
+  if (config.clerkSecretKey) {
+    const verified = await verifyClerkToken(token, { secretKey: config.clerkSecretKey });
+    return claimsToIdentity(verified);
   }
   const jwksUrl = process.env.CLERK_JWKS_URL;
   if (jwksUrl) {

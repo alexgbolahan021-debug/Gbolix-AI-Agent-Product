@@ -23,7 +23,7 @@ With a Postgres database, run `npm run migrate` before `npm run start`. The serv
 
 ## Authentication
 
-Authenticated management requests use `Authorization: Bearer <signed-token>`. In production, configure either `AGENT_JWT_SECRET` for a shared HS256 token or `CLERK_JWKS_URL` to verify Clerk JWTs. The token should expose `sub`, `workspace_id` or `org_id`, and an optional `role` claim.
+Authenticated management requests use `Authorization: Bearer <signed-token>`. For the existing Gbolix setup, configure `CLERK_SECRET_KEY` using the same Clerk secret that belongs to the frontend publishable key. The engine verifies Clerk tokens server-side and does not need a manually copied JWKS URL. `CLERK_JWKS_URL` remains an optional fallback for deployments that prefer direct JWKS verification. The token should expose `sub`, `workspace_id` or `org_id`, and an optional `role` claim.
 
 Website deployments use an opaque deployment token returned once when a deployment is created. API keys are returned only once and are stored as SHA-256 hashes. Public credentials must identify a single agent and never expose provider keys or workspace-wide secrets.
 
@@ -85,7 +85,7 @@ The engine never mutates the site’s balance directly.
 
 Create a Render web service from this repository and use the included `render.yaml`. The blueprint provisions the Node service and a Postgres database. Set the provider, identity, credit-platform, CORS, and public URL environment variables in Render’s secret settings. The service health check is `/healthz`.
 
-The site’s frontend needs `VITE_GBOLIX_AGENT_URL=https://<your-engine-domain>` and must pass an authenticated Clerk/site token to management routes. Customer pages must never embed the engine’s internal service token.
+The site’s frontend needs `VITE_GBOLIX_AGENT_URL=https://<your-engine-domain>` and must pass an authenticated Clerk/site token to management routes. Customer pages must never embed the engine’s internal service token. The Render engine should receive `CLERK_SECRET_KEY` from the same Clerk environment used by the working Gbolix frontend; do not switch the frontend between `pk_live_` and `pk_test_` during setup.
 
 ## Further design
 

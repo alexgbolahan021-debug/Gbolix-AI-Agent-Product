@@ -14,6 +14,7 @@ export const config = {
   platformUrl: process.env.GBOLIX_PLATFORM_URL,
   platformToken: process.env.GBOLIX_PLATFORM_TOKEN,
   agentJwtSecret: process.env.AGENT_JWT_SECRET,
+  clerkSecretKey: process.env.CLERK_SECRET_KEY,
   adminUserIds: new Set(list(process.env.AGENT_ADMIN_USER_IDS)),
   corsOrigins: list(process.env.CORS_ORIGINS),
   maxToolRounds: Number(process.env.MAX_TOOL_ROUNDS ?? 3),

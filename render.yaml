@@ -27,6 +27,8 @@ services:
         sync: false
       - key: AGENT_JWT_SECRET
         sync: false
+      - key: CLERK_SECRET_KEY
+        sync: false
       - key: CLERK_JWKS_URL
         sync: false
       - key: AGENT_ADMIN_USER_IDS

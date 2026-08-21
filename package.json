@@ -19,11 +19,12 @@
     "express": "^5.1.0",
     "jose": "^6.0.10",
     "pg": "^8.16.3",
-    "zod": "^4.0.17"
+    "zod": "^4.0.17",
+    "@clerk/backend": "^3.6.1"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.3",
+    "@types/express": "^5.0.6",
     "@types/node": "^24.3.0",
     "@types/pg": "^8.15.5",
     "tsx": "^4.20.5",
