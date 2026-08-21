@@ -62,7 +62,7 @@ curl -X POST "$ENGINE_URL/v1/agents/agent_123/messages" \
 
 ## Website deployment
 
-`POST /v1/agents/{agentId}/deployments` returns a one-time token and an HTTPS installation snippet similar to:
+`POST /v1/agents/{agentId}/deployments` accepts an `allowedOrigin` such as `https://clientwebsite.com` and returns a one-time token plus an HTTPS installation snippet. The origin should be the website origin only, without a page path or query string. A public widget message is accepted only when its browser origin matches the deployment origin.
 
 ```html
 <script src="https://agent.example.com/widget.js"
