@@ -137,7 +137,7 @@ export type Store = {
   addUsageEvent(event: UsageEvent): Promise<UsageEvent>;
   listUsage(agentId: string, workspaceId: string, limit: number): Promise<UsageEvent[]>;
   adminOverview(): Promise<Record<string, number>>;
-  adminCustomers(limit: number): Promise<Array<{ workspaceId: string; agents: number; responses: number; creditsUsed: number }>>;
+  adminCustomers(limit: number): Promise<AdminCustomer[]>;
   adminAgents(limit: number): Promise<AdminAgent[]>;
   adminConversations(limit: number): Promise<AdminConversation[]>;
   adminConversation(conversationId: string): Promise<{ conversation: AdminConversation; messages: Message[] } | undefined>;
@@ -149,6 +149,8 @@ export type Store = {
   adminActivity(limit: number): Promise<AdminActivity[]>;
 };
 
+
+export type AdminCustomer = { workspaceId: string; customerName?: string; customerEmail?: string; agents: number; responses: number; creditsUsed: number };
 
 export type AdminAgent = Agent & {
   knowledgeCount: number;

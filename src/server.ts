@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import cors from "cors";
+import { createClerkClient } from "@clerk/backend";
 import express, { type NextFunction, type Request, type Response } from "express";
 import { config, isProductionConfig } from "./config.js";
 import { resolveIdentity, resolveInternalIdentity } from "./auth.js";
@@ -11,6 +12,7 @@ import type { Identity } from "./types.js";
 const store = await createStore();
 const credits = new CreditService();
 const runtime = new AgentRuntime(store, credits);
+const clerkClient = config.clerkSecretKey ? createClerkClient({ secretKey: config.clerkSecretKey }) : undefined;
 const app = express();
 
 app.use(async (request, response, next) => {
@@ -58,8 +60,9 @@ app.get("/v1/agents/:agentId/usage", withIdentity(async (request, response, iden
 
 const adminLimit = (request: Request) => Math.min(Math.max(Number(request.query.limit ?? 100) || 100, 1), 200);
 app.get("/v1/admin/overview", withIdentity(async (_request, response) => response.json(await store.adminOverview()), { requireAdmin: true }));
-app.get("/v1/admin/customers", withIdentity(async (request, response) => response.json(await store.adminCustomers(adminLimit(request))), { requireAdmin: true }));
+app.get("/v1/admin/customers", withIdentity(async (request, response) => { const rows = await store.adminCustomers(adminLimit(request)); const labeled = await Promise.all(rows.map(async (row) => ({ ...row, ...(await customerLabel(row.workspaceId)) }))); return response.json(labeled); }, { requireAdmin: true }));
 app.get("/v1/admin/agents", withIdentity(async (request, response) => response.json(await store.adminAgents(adminLimit(request))), { requireAdmin: true }));
+app.patch("/v1/admin/agents/:agentId", withIdentity(async (request, response) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent) return response.status(404).json({ error: "Agent not found" }); const action = String((request.body as Record<string, unknown>)?.action ?? ""); const status = action === "freeze" ? "paused" : action === "unfreeze" || action === "enable" ? "active" : action === "disable" ? "disabled" : undefined; if (!status) return response.status(400).json({ error: "action must be freeze, unfreeze, disable, or enable" }); const updated = await store.updateAgent(agent.id, agent.workspaceId, { status }); return updated ? response.json(updated) : response.status(404).json({ error: "Agent not found" }); }, { requireAdmin: true }));
 app.get("/v1/admin/conversations", withIdentity(async (request, response) => response.json(await store.adminConversations(adminLimit(request))), { requireAdmin: true }));
 app.get("/v1/admin/conversations/:conversationId", withIdentity(async (request, response) => { const item = await store.adminConversation(String(request.params.conversationId)); return item ? response.json(item) : response.status(404).json({ error: "Conversation not found" }); }, { requireAdmin: true }));
 app.get("/v1/admin/usage", withIdentity(async (request, response) => response.json(await store.adminUsage(adminLimit(request))), { requireAdmin: true }));
@@ -77,6 +80,7 @@ app.use((error: unknown, _request: Request, response: Response, _next: NextFunct
 function withIdentity(handler: (request: Request, response: Response, identity: Identity) => Promise<unknown>, options?: { allowPublicDeployment?: boolean; requireAdmin?: boolean }) {
   return async (request: Request, response: Response, next: NextFunction) => { try { const identity = await resolveIdentity({ headers: request.headers }, store, options); await handler(request, response, identity); } catch (error) { next(error); } };
 }
+async function customerLabel(workspaceId: string) { if (!clerkClient) return { customerName: workspaceId }; try { const user = await clerkClient.users.getUser(workspaceId); const customerName = [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username || user.primaryEmailAddress?.emailAddress || workspaceId; const customerEmail = user.primaryEmailAddress?.emailAddress ?? user.emailAddresses[0]?.emailAddress; return { customerName, customerEmail }; } catch { return { customerName: workspaceId }; } }
 function bearerToken(request: Request) { const value = request.header("authorization"); return value?.startsWith("Bearer ") ? value.slice(7) : undefined; }
 function allowCors(request: Request, response: Response, next: NextFunction, origin?: string) { if (origin) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Vary", "Origin"); response.setHeader("Access-Control-Allow-Headers", "content-type,authorization,x-request-id"); response.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS"); } if (request.method === "OPTIONS") return response.status(204).end(); return next(); }
 function normalizeOrigin(value: string) { try { const url = new URL(value.trim()); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.pathname !== "/" && url.pathname !== "" || url.search || url.hash) return undefined; return url.origin; } catch { return undefined; } }
