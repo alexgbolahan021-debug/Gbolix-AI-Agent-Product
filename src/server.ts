@@ -13,6 +13,7 @@ const store = await createStore();
 const credits = new CreditService();
 const runtime = new AgentRuntime(store, credits);
 const clerkClient = config.clerkSecretKey ? createClerkClient({ secretKey: config.clerkSecretKey }) : undefined;
+const messageRateLimits = new Map<string, { windowStart: number; count: number }>();
 const app = express();
 
 app.use(async (request, response, next) => {
@@ -46,7 +47,7 @@ app.get("/v1/agents/:agentId/knowledge", withIdentity(async (request, response, 
 app.post("/v1/agents/:agentId/knowledge", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); const body = request.body as any; if (typeof body.title !== "string" || typeof body.content !== "string" || !body.title.trim() || !body.content.trim()) return response.status(400).json({ error: "title and content are required" }); return response.status(201).json(await store.addKnowledge({ agentId: agent.id, workspaceId: identity.workspaceId, title: body.title.trim(), content: body.content.trim(), sourceType: body.sourceType === "url" ? "url" : "text", status: "ready" })); }));
 app.delete("/v1/agents/:agentId/knowledge/:knowledgeId", withIdentity(async (request, response, identity) => { const removed = await store.deleteKnowledge(String(request.params.knowledgeId), String(request.params.agentId), identity.workspaceId); return removed ? response.status(204).send() : response.status(404).json({ error: "Knowledge source not found" }); }));
 
-app.post("/v1/agents/:agentId/messages", withIdentity(async (request, response, identity) => { try { return response.json(await runtime.run(String(request.params.agentId), identity, request.body)); } catch (error) { if (error instanceof CreditError && error.code === "INSUFFICIENT_CREDITS") return response.status(402).json({ error: error.message, code: error.code }); throw error; } }, { allowPublicDeployment: true }));
+app.post("/v1/agents/:agentId/messages", withIdentity(async (request, response, identity) => { const limit = consumeMessageRateLimit(`${identity.workspaceId}:${identity.subject}`); if (!limit.allowed) { response.setHeader("Retry-After", String(Math.ceil(limit.retryAfterMs / 1000))); return response.status(429).json({ error: "Too many agent requests. Please retry shortly.", code: "RATE_LIMITED" }); } try { return response.json(await runtime.run(String(request.params.agentId), identity, request.body)); } catch (error) { if (error instanceof CreditError && error.code === "INSUFFICIENT_CREDITS") return response.status(402).json({ error: error.message, code: error.code }); throw error; } }, { allowPublicDeployment: true }));
 app.get("/v1/agents/:agentId/conversations", withIdentity(async (request, response, identity) => response.json(await store.listConversations(String(request.params.agentId), identity.workspaceId))));
 app.get("/v1/conversations/:conversationId", withIdentity(async (request, response, identity) => { const conversation = await store.getConversation(String(request.params.conversationId), identity.workspaceId); if (!conversation) return response.status(404).json({ error: "Conversation not found" }); return response.json({ conversation, messages: await store.listMessages(conversation.id) }); }));
 
@@ -78,6 +79,7 @@ app.post("/v1/internal/usage-events", (request, response, next) => { try { resol
 
 app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => { const message = error instanceof Error ? error.message : "Unexpected server error"; const status = /authentication|origin|admin access/i.test(message) ? 401 : 500; response.status(status).json({ error: message }); });
 
+function consumeMessageRateLimit(key: string) { const nowMs = Date.now(); const current = messageRateLimits.get(key); if (!current || nowMs - current.windowStart >= config.rateLimitWindowMs) { messageRateLimits.set(key, { windowStart: nowMs, count: 1 }); return { allowed: true, retryAfterMs: 0 }; } if (current.count >= config.rateLimitMaxRequests) return { allowed: false, retryAfterMs: config.rateLimitWindowMs - (nowMs - current.windowStart) }; current.count += 1; return { allowed: true, retryAfterMs: 0 }; }
 function withIdentity(handler: (request: Request, response: Response, identity: Identity) => Promise<unknown>, options?: { allowPublicDeployment?: boolean; requireAdmin?: boolean }) {
   return async (request: Request, response: Response, next: NextFunction) => { try { const identity = await resolveIdentity({ headers: request.headers }, store, options); await handler(request, response, identity); } catch (error) { next(error); } };
 }

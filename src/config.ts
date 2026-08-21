@@ -24,6 +24,8 @@ export const config = {
   adminUserIds: new Set(list(process.env.AGENT_ADMIN_USER_IDS)),
   corsOrigins: list(process.env.CORS_ORIGINS || "https://gbolix.site,https://www.gbolix.site"),
   maxToolRounds: Number(process.env.MAX_TOOL_ROUNDS ?? 3),
+  rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60000),
+  rateLimitMaxRequests: Number(process.env.RATE_LIMIT_MAX_REQUESTS ?? 60),
   localCredits: Number(process.env.LOCAL_CREDITS ?? 100000),
 };
 
