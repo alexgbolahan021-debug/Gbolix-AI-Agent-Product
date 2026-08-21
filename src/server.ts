@@ -64,6 +64,7 @@ app.get("/v1/admin/conversations", withIdentity(async (request, response) => res
 app.get("/v1/admin/conversations/:conversationId", withIdentity(async (request, response) => { const item = await store.adminConversation(String(request.params.conversationId)); return item ? response.json(item) : response.status(404).json({ error: "Conversation not found" }); }, { requireAdmin: true }));
 app.get("/v1/admin/usage", withIdentity(async (request, response) => response.json(await store.adminUsage(adminLimit(request))), { requireAdmin: true }));
 app.get("/v1/admin/deployments", withIdentity(async (request, response) => response.json(await store.adminDeployments(adminLimit(request))), { requireAdmin: true }));
+app.delete("/v1/admin/deployments/:deploymentId", withIdentity(async (request, response) => { const revoked = await store.adminRevokeDeployment(String(request.params.deploymentId)); return revoked ? response.status(204).send() : response.status(404).json({ error: "Deployment not found" }); }, { requireAdmin: true }));
 app.get("/v1/admin/knowledge", withIdentity(async (request, response) => response.json(await store.adminKnowledge(adminLimit(request))), { requireAdmin: true }));
 app.get("/v1/admin/tools", withIdentity(async (_request, response) => response.json(await store.adminTools()), { requireAdmin: true }));
 app.get("/v1/admin/activity", withIdentity(async (request, response) => response.json(await store.adminActivity(adminLimit(request))), { requireAdmin: true }));
