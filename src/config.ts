@@ -13,6 +13,8 @@ export const config = {
   geminiApiKey: process.env.GEMINI_API_KEY,
   geminiBaseUrl: process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta",
   defaultModel: process.env.DEFAULT_MODEL ?? "gpt-5-mini",
+  openAiModel: process.env.OPENAI_DEFAULT_MODEL ?? process.env.DEFAULT_MODEL ?? "gpt-5-mini",
+  geminiModel: process.env.GEMINI_DEFAULT_MODEL ?? "gemini-2.5-flash-lite",
   creditMode: process.env.CREDIT_MODE ?? "local",
   platformUrl: process.env.GBOLIX_PLATFORM_URL,
   platformToken: process.env.GBOLIX_PLATFORM_TOKEN,

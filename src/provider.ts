@@ -8,7 +8,7 @@ export type Completion = { content: string; toolCalls: ToolCall[]; inputTokens: 
 export async function complete(input: { model: string; messages: ChatMessage[]; tools?: ToolDefinition[] }): Promise<Completion> {
   if (config.aiProvider.toLowerCase() === "gemini") return completeWithGemini(input);
   if (!config.openAiApiKey) return fallbackCompletion(input.messages);
-  const response = await fetch(`${config.openAiBaseUrl.replace(/\/$/, "")}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.openAiApiKey}` }, body: JSON.stringify({ model: input.model || config.defaultModel, messages: input.messages, tools: input.tools?.length ? input.tools : undefined, tool_choice: input.tools?.length ? "auto" : undefined, temperature: 0.3 }) });
+  const response = await fetch(`${config.openAiBaseUrl.replace(/\/$/, "")}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.openAiApiKey}` }, body: JSON.stringify({ model: input.model || config.openAiModel, messages: input.messages, tools: input.tools?.length ? input.tools : undefined, tool_choice: input.tools?.length ? "auto" : undefined, temperature: 0.3 }) });
   if (!response.ok) throw new Error(`AI provider returned ${response.status}: ${await response.text()}`);
   const data = await response.json() as any;
   const message = data.choices?.[0]?.message;
@@ -20,7 +20,7 @@ async function completeWithGemini(input: { model: string; messages: ChatMessage[
   if (!config.geminiApiKey) return fallbackCompletion(input.messages);
   const system = input.messages.find((message) => message.role === "system")?.content;
   const contents = input.messages.filter((message) => message.role !== "system").map((message) => ({ role: message.role === "assistant" ? "model" : "user", parts: [{ text: message.role === "tool" ? `Tool result (${message.name ?? "tool"}): ${message.content}` : message.content }] }));
-  const model = input.model && input.model.startsWith("gemini-") ? input.model : config.defaultModel;
+  const model = input.model && input.model.startsWith("gemini-") ? input.model : config.geminiModel;
   const body: Record<string, unknown> = { contents, generationConfig: { temperature: 0.3 } };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
   if (input.tools?.length) body.tools = [{ functionDeclarations: input.tools.map((tool) => ({ name: tool.function.name, description: tool.function.description, parameters: tool.function.parameters })) }];

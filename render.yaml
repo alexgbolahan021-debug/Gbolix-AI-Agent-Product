@@ -15,8 +15,12 @@ services:
         sync: false
       - key: GEMINI_BASE_URL
         value: https://generativelanguage.googleapis.com/v1beta
+      - key: GEMINI_DEFAULT_MODEL
+        value: gemini-3.6-flash
+      - key: OPENAI_DEFAULT_MODEL
+        value: gpt-5-mini
       - key: DEFAULT_MODEL
-        value: gemini-2.5-flash-lite
+        value: gpt-5-mini
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_BASE_URL

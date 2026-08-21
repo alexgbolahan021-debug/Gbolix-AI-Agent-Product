@@ -23,7 +23,7 @@ With a Postgres database, run `npm run migrate` before `npm run start`. The serv
 
 ## AI providers
 
-The engine supports the existing OpenAI-compatible adapter and a native Gemini REST adapter. To use Google AI Studio, set `AI_PROVIDER=gemini`, `GEMINI_API_KEY`, `GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta`, and `DEFAULT_MODEL=gemini-2.5-flash-lite`. Google states that the Gemini API has a free tier with limited model access and rate limits; availability and quotas are controlled per project and can change. See the official [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing), [rate limits](https://ai.google.dev/gemini-api/docs/rate-limits), and [API key setup](https://ai.google.dev/gemini-api/docs/get-started).
+The engine supports the existing OpenAI-compatible adapter and a native Gemini REST adapter. To use Google AI Studio, set `AI_PROVIDER=gemini`, `GEMINI_API_KEY`, `GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta`, and `GEMINI_DEFAULT_MODEL=gemini-3.6-flash`. The OpenAI setting remains separate as `OPENAI_DEFAULT_MODEL=gpt-5-mini`; the legacy `DEFAULT_MODEL` value is only a backward-compatible fallback. Google states that the Gemini API has a free tier with limited model access and rate limits; availability and quotas are controlled per project and can change. See the official [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing), [rate limits](https://ai.google.dev/gemini-api/docs/rate-limits), and [API key setup](https://ai.google.dev/gemini-api/docs/get-started).
 
 ## Authentication
 
