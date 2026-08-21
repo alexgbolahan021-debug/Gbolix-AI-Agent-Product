@@ -134,6 +134,7 @@ export type Store = {
   createApiKey(input: Omit<ApiKeyRecord, "id" | "createdAt">): Promise<ApiKeyRecord>;
   getApiKeyByHash(keyHash: string): Promise<ApiKeyRecord | undefined>;
   listApiKeys(agentId: string, workspaceId: string): Promise<ApiKeyRecord[]>;
+  revokeApiKey(id: string, agentId: string, workspaceId: string): Promise<boolean>;
   addUsageEvent(event: UsageEvent): Promise<UsageEvent>;
   listUsage(agentId: string, workspaceId: string, limit: number): Promise<UsageEvent[]>;
   adminOverview(): Promise<Record<string, number>>;
