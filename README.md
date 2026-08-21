@@ -62,7 +62,7 @@ curl -X POST "$ENGINE_URL/v1/agents/agent_123/messages" \
 
 ## Website deployment
 
-`POST /v1/agents/{agentId}/deployments` returns a one-time token and an installation snippet similar to:
+`POST /v1/agents/{agentId}/deployments` returns a one-time token and an HTTPS installation snippet similar to:
 
 ```html
 <script src="https://agent.example.com/widget.js"
@@ -71,7 +71,7 @@ curl -X POST "$ENGINE_URL/v1/agents/agent_123/messages" \
         async></script>
 ```
 
-The widget calls `POST /v1/agents/{agentId}/messages`. The widget is only a presentation layer; agent instructions, knowledge, memory, tools, provider credentials, metering, and permissions remain in the engine.
+The widget calls `POST /v1/agents/{agentId}/messages`. The widget is only a presentation layer; agent instructions, knowledge, memory, tools, provider credentials, metering, and permissions remain in the engine. Treat the deployment token like a secret: if it is pasted into a public chat, screenshot, issue, or repository, revoke that deployment and generate a new one.
 
 ## Credits and the Gbolix site
 
