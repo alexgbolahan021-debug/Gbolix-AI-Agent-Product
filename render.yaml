@@ -9,8 +9,14 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: DEFAULT_MODEL
+      - key: AI_PROVIDER
+        value: gemini
+      - key: GEMINI_API_KEY
         sync: false
+      - key: GEMINI_BASE_URL
+        value: https://generativelanguage.googleapis.com/v1beta
+      - key: DEFAULT_MODEL
+        value: gemini-2.5-flash-lite
       - key: OPENAI_API_KEY
         sync: false
       - key: OPENAI_BASE_URL

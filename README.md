@@ -17,9 +17,13 @@ npm run typecheck
 npm run dev
 ```
 
-Without `DATABASE_URL` or `OPENAI_API_KEY`, the engine uses in-memory storage and a deterministic response adapter for local smoke tests. This mode is not suitable for production because data is lost when the process restarts.
+Without `DATABASE_URL` or a configured provider key, the engine uses in-memory storage and a deterministic response adapter for local smoke tests. This mode is not suitable for production because data is lost when the process restarts. For a real free-tier provider, set `AI_PROVIDER=gemini`, add `GEMINI_API_KEY`, and use `DEFAULT_MODEL=gemini-2.5-flash-lite`.
 
 With a Postgres database, run `npm run migrate` before `npm run start`. The service binds to `0.0.0.0` and uses `PORT` when supplied by the host.
+
+## AI providers
+
+The engine supports the existing OpenAI-compatible adapter and a native Gemini REST adapter. To use Google AI Studio, set `AI_PROVIDER=gemini`, `GEMINI_API_KEY`, `GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta`, and `DEFAULT_MODEL=gemini-2.5-flash-lite`. Google states that the Gemini API has a free tier with limited model access and rate limits; availability and quotas are controlled per project and can change. See the official [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing), [rate limits](https://ai.google.dev/gemini-api/docs/rate-limits), and [API key setup](https://ai.google.dev/gemini-api/docs/get-started).
 
 ## Authentication
 

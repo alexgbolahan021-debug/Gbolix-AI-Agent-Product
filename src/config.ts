@@ -7,8 +7,11 @@ function list(value: string | undefined): string[] {
 export const config = {
   port: Number(process.env.PORT ?? 4100),
   databaseUrl: process.env.DATABASE_URL,
+  aiProvider: process.env.AI_PROVIDER ?? "openai",
   openAiApiKey: process.env.OPENAI_API_KEY,
   openAiBaseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
+  geminiApiKey: process.env.GEMINI_API_KEY,
+  geminiBaseUrl: process.env.GEMINI_BASE_URL ?? "https://generativelanguage.googleapis.com/v1beta",
   defaultModel: process.env.DEFAULT_MODEL ?? "gpt-5-mini",
   creditMode: process.env.CREDIT_MODE ?? "local",
   platformUrl: process.env.GBOLIX_PLATFORM_URL,
