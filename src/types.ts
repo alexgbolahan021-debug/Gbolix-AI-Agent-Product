@@ -12,6 +12,8 @@ export type Identity = {
   authType: "identity" | "deployment" | "api-key" | "internal";
 };
 
+export type AgentVersion = { id: string; agentId: string; workspaceId: string; version: number; config: Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "status" | "welcomeMessage" | "enabledTools">; createdBy: string; createdAt: string };
+
 export type Agent = {
   id: string;
   workspaceId: string;
@@ -115,6 +117,9 @@ export type AgentMessageOutput = {
 
 export type Store = {
   listAgents(workspaceId: string): Promise<Agent[]>;
+  createAgentVersion(input: Omit<AgentVersion, "id" | "createdAt">): Promise<AgentVersion>;
+  listAgentVersions(agentId: string, workspaceId: string): Promise<AgentVersion[]>;
+  restoreAgentVersion(versionId: string, agentId: string, workspaceId: string): Promise<Agent | undefined>;
   getAgent(agentId: string): Promise<Agent | undefined>;
   createAgent(input: Omit<Agent, "id" | "createdAt" | "updatedAt">): Promise<Agent>;
   updateAgent(agentId: string, workspaceId: string, patch: Partial<Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "status" | "welcomeMessage" | "enabledTools">>): Promise<Agent | undefined>;

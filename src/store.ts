@@ -12,6 +12,7 @@ import type {
   AdminUsageEvent,
   AuditEvent,
   Agent,
+  AgentVersion,
   ApiKeyRecord,
   Conversation,
   ConversationStatus,
@@ -42,6 +43,17 @@ export async function ensureSchema(pool: Pool): Promise<void> {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS gbolix_agents_workspace_idx ON gbolix_agents(workspace_id);
+    CREATE TABLE IF NOT EXISTS gbolix_agent_versions (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE,
+      workspace_id TEXT NOT NULL,
+      version INTEGER NOT NULL,
+      config JSONB NOT NULL,
+      created_by TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(agent_id, version)
+    );
+    CREATE INDEX IF NOT EXISTS gbolix_agent_versions_agent_idx ON gbolix_agent_versions(agent_id, workspace_id, version DESC);
     CREATE TABLE IF NOT EXISTS gbolix_knowledge (
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE,
@@ -135,8 +147,12 @@ class MemoryStore implements Store {
   private apiKeys = new Map<string, ApiKeyRecord>();
   private usage = new Map<string, UsageEvent>();
   private audits = new Map<string, AuditEvent>();
+  private agentVersions = new Map<string, AgentVersion>();
 
   async listAgents(workspaceId: string) { return [...this.agents.values()].filter((item) => item.workspaceId === workspaceId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); }
+  async createAgentVersion(input: Omit<AgentVersion, "id" | "createdAt">) { const item = { ...input, id: id("ver"), createdAt: now() }; this.agentVersions.set(item.id, item); return item; }
+  async listAgentVersions(agentId: string, workspaceId: string) { return [...this.agentVersions.values()].filter((item) => item.agentId === agentId && item.workspaceId === workspaceId).sort((a, b) => b.version - a.version); }
+  async restoreAgentVersion(versionId: string, agentId: string, workspaceId: string) { const version = this.agentVersions.get(versionId); if (!version || version.agentId !== agentId || version.workspaceId !== workspaceId) return undefined; return this.updateAgent(agentId, workspaceId, version.config); }
   async getAgent(agentId: string) { return this.agents.get(agentId); }
   async createAgent(input: Omit<Agent, "id" | "createdAt" | "updatedAt">) { const item = { ...input, id: id("agent"), createdAt: now(), updatedAt: now() }; this.agents.set(item.id, item); return item; }
   async updateAgent(agentId: string, workspaceId: string, patch: Partial<Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "status" | "welcomeMessage" | "enabledTools">>) { const current = this.agents.get(agentId); if (!current || current.workspaceId !== workspaceId) return undefined; const item = { ...current, ...patch, updatedAt: now() }; this.agents.set(agentId, item); return item; }
@@ -176,6 +192,9 @@ class MemoryStore implements Store {
 class PostgresStore implements Store {
   constructor(private readonly pool: Pool) {}
   async listAgents(workspaceId: string) { const result = await this.pool.query("SELECT * FROM gbolix_agents WHERE workspace_id = $1 ORDER BY updated_at DESC", [workspaceId]); return result.rows.map((row) => agentRow(row)); }
+  async createAgentVersion(input: Omit<AgentVersion, "id" | "createdAt">) { const result = await this.pool.query("INSERT INTO gbolix_agent_versions (id,agent_id,workspace_id,version,config,created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *", [id("ver"), input.agentId, input.workspaceId, input.version, JSON.stringify(input.config), input.createdBy]); return agentVersionRow(result.rows[0]); }
+  async listAgentVersions(agentId: string, workspaceId: string) { const result = await this.pool.query("SELECT * FROM gbolix_agent_versions WHERE agent_id=$1 AND workspace_id=$2 ORDER BY version DESC", [agentId, workspaceId]); return result.rows.map(agentVersionRow); }
+  async restoreAgentVersion(versionId: string, agentId: string, workspaceId: string) { const result = await this.pool.query("SELECT config FROM gbolix_agent_versions WHERE id=$1 AND agent_id=$2 AND workspace_id=$3 LIMIT 1", [versionId, agentId, workspaceId]); const version = result.rows[0]; if (!version) return undefined; return this.updateAgent(agentId, workspaceId, version.config as AgentVersion["config"]); }
   async getAgent(agentId: string) { const result = await this.pool.query("SELECT * FROM gbolix_agents WHERE id = $1 LIMIT 1", [agentId]); return result.rows[0] ? agentRow(result.rows[0]) : undefined; }
   async createAgent(input: Omit<Agent, "id" | "createdAt" | "updatedAt">) { const result = await this.pool.query("INSERT INTO gbolix_agents (id, workspace_id, name, description, instructions, tone, model, status, welcome_message, enabled_tools) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *", [id("agent"), input.workspaceId, input.name, input.description, input.instructions, input.tone, input.model, input.status, input.welcomeMessage, JSON.stringify(input.enabledTools)]); return agentRow(result.rows[0]); }
   async updateAgent(agentId: string, workspaceId: string, patch: Partial<Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "status" | "welcomeMessage" | "enabledTools">>) { const current = await this.getAgent(agentId); if (!current || current.workspaceId !== workspaceId) return undefined; const next = { ...current, ...patch }; const result = await this.pool.query("UPDATE gbolix_agents SET name=$1, description=$2, instructions=$3, tone=$4, model=$5, status=$6, welcome_message=$7, enabled_tools=$8, updated_at=NOW() WHERE id=$9 AND workspace_id=$10 RETURNING *", [next.name, next.description, next.instructions, next.tone, next.model, next.status, next.welcomeMessage, JSON.stringify(next.enabledTools), agentId, workspaceId]); return result.rows[0] ? agentRow(result.rows[0]) : undefined; }
@@ -213,6 +232,7 @@ class PostgresStore implements Store {
 }
 
 function hash(value: string) { return crypto.createHash("sha256").update(value).digest("hex"); }
+function agentVersionRow(row: any): AgentVersion { return { id: row.id, agentId: row.agent_id, workspaceId: row.workspace_id, version: row.version, config: row.config, createdBy: row.created_by, createdAt: new Date(row.created_at).toISOString() }; }
 function agentRow(row: any, prefix = "") : Agent { return { id: row[`${prefix}id`] ?? row.id, workspaceId: row[`${prefix}workspace_id`] ?? row.workspace_id, name: row[`${prefix}name`] ?? row.name, description: row[`${prefix}description`] ?? row.description, instructions: row[`${prefix}instructions`] ?? row.instructions, tone: row[`${prefix}tone`] ?? row.tone, model: row[`${prefix}model`] ?? row.model, status: row[`${prefix}status`] ?? row.status, welcomeMessage: row[`${prefix}welcome_message`] ?? row.welcome_message, enabledTools: row[`${prefix}enabled_tools`] ?? row.enabled_tools ?? [], createdAt: new Date(row[`${prefix}created_at`] ?? row.created_at).toISOString(), updatedAt: new Date(row[`${prefix}updated_at`] ?? row.updated_at).toISOString() }; }
 function knowledgeRow(row: any): KnowledgeSource { return { id: row.id, agentId: row.agent_id, workspaceId: row.workspace_id, title: row.title, content: row.content, sourceType: row.source_type, status: row.status, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() }; }
 function conversationRow(row: any): Conversation { return { id: row.id, agentId: row.agent_id, workspaceId: row.workspace_id, channel: row.channel, visitorKey: row.visitor_key, status: row.status, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() }; }
