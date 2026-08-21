@@ -138,4 +138,34 @@ export type Store = {
   listUsage(agentId: string, workspaceId: string, limit: number): Promise<UsageEvent[]>;
   adminOverview(): Promise<Record<string, number>>;
   adminCustomers(limit: number): Promise<Array<{ workspaceId: string; agents: number; responses: number; creditsUsed: number }>>;
+  adminAgents(limit: number): Promise<AdminAgent[]>;
+  adminConversations(limit: number): Promise<AdminConversation[]>;
+  adminConversation(conversationId: string): Promise<{ conversation: AdminConversation; messages: Message[] } | undefined>;
+  adminUsage(limit: number): Promise<AdminUsageEvent[]>;
+  adminDeployments(limit: number): Promise<AdminDeployment[]>;
+  adminKnowledge(limit: number): Promise<AdminKnowledge[]>;
+  adminTools(): Promise<AdminTool[]>;
+  adminActivity(limit: number): Promise<AdminActivity[]>;
 };
+
+
+export type AdminAgent = Agent & {
+  knowledgeCount: number;
+  conversationCount: number;
+  responses: number;
+  creditsUsed: number;
+  deploymentCount: number;
+};
+
+export type AdminConversation = Conversation & {
+  agentName: string;
+  messageCount: number;
+  lastMessage?: string;
+};
+
+export type AdminUsageEvent = UsageEvent & { agentName: string };
+export type AdminDeployment = Deployment & { agentName: string };
+export type AdminKnowledge = KnowledgeSource & { agentName: string };
+export type AdminTool = { name: string; description: string; agents: number; calls: number };
+export type AdminActivity = { id: string; type: "usage" | "conversation" | "deployment"; workspaceId: string; agentId?: string; agentName?: string; description: string; status: string; createdAt: string };
+export type AdminSettings = { creditMode: string; aiProvider: string; storage: string; adminUsers: number; corsOrigins: number };

@@ -56,8 +56,18 @@ app.post("/v1/agents/:agentId/api-keys", withIdentity(async (request, response, 
 app.get("/v1/agents/:agentId/api-keys", withIdentity(async (request, response, identity) => response.json(await store.listApiKeys(String(request.params.agentId), identity.workspaceId))));
 app.get("/v1/agents/:agentId/usage", withIdentity(async (request, response, identity) => { const events = await store.listUsage(String(request.params.agentId), identity.workspaceId, Math.min(Number(request.query.limit ?? 50), 200)); return response.json({ events, summary: { requests: events.length, responses: events.filter((item) => item.status === "completed").length, toolCalls: events.reduce((sum, item) => sum + item.toolCalls, 0), creditsUsed: events.reduce((sum, item) => sum + item.credits, 0) } }); }));
 
-app.get("/v1/admin/overview", withIdentity(async (_request, response, identity) => response.json(await store.adminOverview()), { requireAdmin: true }));
-app.get("/v1/admin/customers", withIdentity(async (request, response, identity) => response.json(await store.adminCustomers(Math.min(Number(request.query.limit ?? 50), 200))), { requireAdmin: true }));
+const adminLimit = (request: Request) => Math.min(Math.max(Number(request.query.limit ?? 100) || 100, 1), 200);
+app.get("/v1/admin/overview", withIdentity(async (_request, response) => response.json(await store.adminOverview()), { requireAdmin: true }));
+app.get("/v1/admin/customers", withIdentity(async (request, response) => response.json(await store.adminCustomers(adminLimit(request))), { requireAdmin: true }));
+app.get("/v1/admin/agents", withIdentity(async (request, response) => response.json(await store.adminAgents(adminLimit(request))), { requireAdmin: true }));
+app.get("/v1/admin/conversations", withIdentity(async (request, response) => response.json(await store.adminConversations(adminLimit(request))), { requireAdmin: true }));
+app.get("/v1/admin/conversations/:conversationId", withIdentity(async (request, response) => { const item = await store.adminConversation(String(request.params.conversationId)); return item ? response.json(item) : response.status(404).json({ error: "Conversation not found" }); }, { requireAdmin: true }));
+app.get("/v1/admin/usage", withIdentity(async (request, response) => response.json(await store.adminUsage(adminLimit(request))), { requireAdmin: true }));
+app.get("/v1/admin/deployments", withIdentity(async (request, response) => response.json(await store.adminDeployments(adminLimit(request))), { requireAdmin: true }));
+app.get("/v1/admin/knowledge", withIdentity(async (request, response) => response.json(await store.adminKnowledge(adminLimit(request))), { requireAdmin: true }));
+app.get("/v1/admin/tools", withIdentity(async (_request, response) => response.json(await store.adminTools()), { requireAdmin: true }));
+app.get("/v1/admin/activity", withIdentity(async (request, response) => response.json(await store.adminActivity(adminLimit(request))), { requireAdmin: true }));
+app.get("/v1/admin/settings", withIdentity(async (_request, response) => response.json({ creditMode: config.creditMode, aiProvider: config.aiProvider, storage: config.databaseUrl ? "postgres" : "memory", adminUsers: config.adminUserIds.size, corsOrigins: config.corsOrigins.length }), { requireAdmin: true }));
 app.post("/v1/internal/credit-authorizations", (request, response, next) => { try { resolveInternalIdentity({ headers: request.headers }); return next(); } catch (error) { return next(error); } }, (_request, response) => response.status(501).json({ error: "The platform credit authorization endpoint is owned by Gbolix.site." }));
 app.post("/v1/internal/usage-events", (request, response, next) => { try { resolveInternalIdentity({ headers: request.headers }); return next(); } catch (error) { return next(error); } }, (_request, response) => response.status(501).json({ error: "The platform usage event endpoint is owned by Gbolix.site." }));
 
