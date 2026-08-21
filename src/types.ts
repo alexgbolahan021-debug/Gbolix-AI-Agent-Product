@@ -137,6 +137,7 @@ export type Store = {
   revokeApiKey(id: string, agentId: string, workspaceId: string): Promise<boolean>;
   addUsageEvent(event: UsageEvent): Promise<UsageEvent>;
   listUsage(agentId: string, workspaceId: string, limit: number): Promise<UsageEvent[]>;
+  addAuditEvent(event: Omit<AuditEvent, "id" | "createdAt">): Promise<AuditEvent>;
   adminOverview(): Promise<Record<string, number>>;
   adminCustomers(limit: number): Promise<AdminCustomer[]>;
   adminAgents(limit: number): Promise<AdminAgent[]>;
@@ -171,5 +172,6 @@ export type AdminUsageEvent = UsageEvent & { agentName: string };
 export type AdminDeployment = Deployment & { agentName: string };
 export type AdminKnowledge = KnowledgeSource & { agentName: string };
 export type AdminTool = { name: string; description: string; agents: number; calls: number };
-export type AdminActivity = { id: string; type: "usage" | "conversation" | "deployment"; workspaceId: string; agentId?: string; agentName?: string; description: string; status: string; createdAt: string };
+export type AuditEvent = { id: string; actorId: string; workspaceId: string; action: string; targetType: string; targetId: string; metadata: Record<string, unknown>; createdAt: string };
+export type AdminActivity = { id: string; type: "usage" | "conversation" | "deployment" | "audit"; workspaceId: string; agentId?: string; agentName?: string; description: string; status: string; createdAt: string };
 export type AdminSettings = { creditMode: string; aiProvider: string; storage: string; adminUsers: number; corsOrigins: number };
