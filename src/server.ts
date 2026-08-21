@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { config } from "./config.js";
+import { config, isProductionConfig } from "./config.js";
 import { resolveIdentity, resolveInternalIdentity } from "./auth.js";
 import { CreditError, CreditService } from "./credits.js";
 import { AgentRuntime } from "./runtime.js";
@@ -15,7 +15,7 @@ const app = express();
 
 app.use(async (request, response, next) => {
   const origin = request.header("origin");
-  if (!origin || config.corsOrigins.length === 0 || config.corsOrigins.includes(origin)) return allowCors(request, response, next, origin);
+  if (!origin || config.corsOrigins.includes(origin) || (!isProductionConfig() && config.corsOrigins.length === 0)) return allowCors(request, response, next, origin);
   const token = bearerToken(request);
   const deployment = token ? await store.getDeploymentByToken(token).catch(() => undefined) : undefined;
   if (deployment?.deployment.allowedOrigin === origin) return allowCors(request, response, next, origin);
