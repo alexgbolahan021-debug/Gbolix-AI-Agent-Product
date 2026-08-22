@@ -36,7 +36,7 @@ export class AgentRuntime {
       const system = buildSystemPrompt(agent, retrievedKnowledge.map((item) => `### ${item.title}\n${item.content}`).join("\n\n"));
       const messages: ChatMessage[] = [{ role: "system", content: system }, ...history.slice(-24).map((item) => ({ role: item.role, content: item.content, ...(item.toolName ? { name: item.toolName } : {}) }))];
       const connections = agent.level >= 3 ? await this.store.listConnections(agent.id, identity.workspaceId) : [];
-      const customConnections = connections.filter((connection) => connection.kind === "custom_api");
+      const customConnections = (await Promise.all(connections.filter((connection) => connection.kind === "custom_api").map((connection) => this.store.getConnection(connection.id, agent.id, identity.workspaceId)))).filter((connection): connection is StoredAgentConnection => Boolean(connection));
       const customToolMap = new Map(customConnections.map((connection) => [customToolName(connection), connection]));
       const tools: ToolDefinition[] = agent.level >= 3 ? [...agent.enabledTools.map((name) => BUILTIN_TOOLS[name]).filter(Boolean), ...customConnections.map(customConnectionTool)] : [];
       const explicitContact = agent.level >= 3 && agent.enabledTools.includes("capture_contact") ? extractExplicitContactRequest(input.message) : undefined;
