@@ -12,7 +12,8 @@ export type Identity = {
   authType: "identity" | "deployment" | "api-key" | "internal";
 };
 
-export type AgentVersion = { id: string; agentId: string; workspaceId: string; version: number; config: Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "status" | "welcomeMessage" | "enabledTools">; createdBy: string; createdAt: string };
+export type AgentLevel = 1 | 2 | 3;
+export type AgentVersion = { id: string; agentId: string; workspaceId: string; version: number; config: Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "status" | "welcomeMessage" | "enabledTools" | "level">; createdBy: string; createdAt: string };
 
 export type Agent = {
   id: string;
@@ -22,6 +23,7 @@ export type Agent = {
   instructions: string;
   tone: string;
   model: string;
+  level: AgentLevel;
   status: AgentStatus;
   welcomeMessage: string;
   enabledTools: string[];
@@ -122,7 +124,7 @@ export type Store = {
   restoreAgentVersion(versionId: string, agentId: string, workspaceId: string): Promise<Agent | undefined>;
   getAgent(agentId: string): Promise<Agent | undefined>;
   createAgent(input: Omit<Agent, "id" | "createdAt" | "updatedAt">): Promise<Agent>;
-  updateAgent(agentId: string, workspaceId: string, patch: Partial<Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "status" | "welcomeMessage" | "enabledTools">>): Promise<Agent | undefined>;
+  updateAgent(agentId: string, workspaceId: string, patch: Partial<Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "level" | "status" | "welcomeMessage" | "enabledTools">>): Promise<Agent | undefined>;
   listKnowledge(agentId: string, workspaceId: string): Promise<KnowledgeSource[]>;
   addKnowledge(input: Omit<KnowledgeSource, "id" | "createdAt" | "updatedAt">): Promise<KnowledgeSource>;
   deleteKnowledge(id: string, agentId: string, workspaceId: string): Promise<boolean>;
