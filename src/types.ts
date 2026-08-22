@@ -75,6 +75,22 @@ export type Deployment = {
   updatedAt: string;
 };
 
+export type AgentConnection = {
+  id: string;
+  agentId: string;
+  workspaceId: string;
+  kind: "native" | "custom_api";
+  provider: string;
+  name: string;
+  endpoint?: string;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  authType?: "none" | "api_key" | "bearer";
+  status: "connected" | "disconnected";
+  permissions: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
 export type ApiKeyRecord = {
   id: string;
   agentId: string;
@@ -142,6 +158,9 @@ export type Store = {
   getApiKeyByHash(keyHash: string): Promise<ApiKeyRecord | undefined>;
   listApiKeys(agentId: string, workspaceId: string): Promise<ApiKeyRecord[]>;
   revokeApiKey(id: string, agentId: string, workspaceId: string): Promise<boolean>;
+  createConnection(input: { agentId: string; workspaceId: string; kind: AgentConnection["kind"]; provider: string; name: string; endpoint?: string; method?: AgentConnection["method"]; authType?: AgentConnection["authType"]; encryptedSecret?: string; headers?: Record<string, string>; parameters?: Record<string, string>; permissions: string[] }): Promise<AgentConnection>;
+  listConnections(agentId: string, workspaceId: string): Promise<AgentConnection[]>;
+  deleteConnection(id: string, agentId: string, workspaceId: string): Promise<boolean>;
   addUsageEvent(event: UsageEvent): Promise<UsageEvent>;
   listUsage(agentId: string, workspaceId: string, limit: number): Promise<UsageEvent[]>;
   addAuditEvent(event: Omit<AuditEvent, "id" | "createdAt">): Promise<AuditEvent>;

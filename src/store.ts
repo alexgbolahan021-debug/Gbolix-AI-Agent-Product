@@ -14,6 +14,7 @@ import type {
   Agent,
   AgentVersion,
   ApiKeyRecord,
+  AgentConnection,
   Conversation,
   ConversationStatus,
   Deployment,
@@ -114,6 +115,25 @@ export async function ensureSchema(pool: Pool): Promise<void> {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       last_used_at TIMESTAMPTZ
     );
+    CREATE TABLE IF NOT EXISTS gbolix_agent_connections (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE,
+      workspace_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      name TEXT NOT NULL,
+      endpoint TEXT,
+      method TEXT,
+      auth_type TEXT,
+      encrypted_secret TEXT,
+      headers JSONB NOT NULL DEFAULT '{}'::jsonb,
+      parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
+      status TEXT NOT NULL DEFAULT 'connected',
+      permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS gbolix_agent_connections_agent_idx ON gbolix_agent_connections(agent_id, workspace_id, updated_at DESC);
     CREATE TABLE IF NOT EXISTS gbolix_usage_events (
       request_id TEXT PRIMARY KEY,
       workspace_id TEXT NOT NULL,
@@ -150,6 +170,7 @@ class MemoryStore implements Store {
   private messages = new Map<string, Message>();
   private deployments = new Map<string, Deployment & { tokenHash: string }>();
   private apiKeys = new Map<string, ApiKeyRecord>();
+  private connections = new Map<string, AgentConnection & { encryptedSecret?: string; headers?: Record<string, string>; parameters?: Record<string, string> }>();
   private usage = new Map<string, UsageEvent>();
   private audits = new Map<string, AuditEvent>();
   private agentVersions = new Map<string, AgentVersion>();
@@ -178,6 +199,9 @@ class MemoryStore implements Store {
   async getApiKeyByHash(keyHash: string) { const item = [...this.apiKeys.values()].find((value) => value.keyHash === keyHash && value.status === "active"); if (item) item.lastUsedAt = now(); return item; }
   async listApiKeys(agentId: string, workspaceId: string) { return [...this.apiKeys.values()].filter((item) => item.agentId === agentId && item.workspaceId === workspaceId).map((item) => ({ ...item, keyHash: "" })); }
   async revokeApiKey(id: string, agentId: string, workspaceId: string) { const item = this.apiKeys.get(id); if (!item || item.agentId !== agentId || item.workspaceId !== workspaceId) return false; this.apiKeys.set(id, { ...item, status: "revoked" }); return true; }
+  async createConnection(input: { agentId: string; workspaceId: string; kind: AgentConnection["kind"]; provider: string; name: string; endpoint?: string; method?: AgentConnection["method"]; authType?: AgentConnection["authType"]; encryptedSecret?: string; headers?: Record<string, string>; parameters?: Record<string, string>; permissions: string[] }) { const item = { ...input, id: id("conn"), status: "connected" as const, createdAt: now(), updatedAt: now() }; this.connections.set(item.id, item); const { encryptedSecret: _secret, headers: _headers, parameters: _parameters, ...publicItem } = item; return publicItem; }
+  async listConnections(agentId: string, workspaceId: string) { return [...this.connections.values()].filter((item) => item.agentId === agentId && item.workspaceId === workspaceId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).map(({ encryptedSecret: _secret, headers: _headers, parameters: _parameters, ...item }) => item); }
+  async deleteConnection(id: string, agentId: string, workspaceId: string) { const item = this.connections.get(id); if (!item || item.agentId !== agentId || item.workspaceId !== workspaceId) return false; this.connections.delete(id); return true; }
   async addUsageEvent(event: UsageEvent) { const existing = this.usage.get(event.requestId); if (existing) return existing; this.usage.set(event.requestId, event); return event; }
   async listUsage(agentId: string, workspaceId: string, limit: number) { return [...this.usage.values()].filter((item) => item.agentId === agentId && item.workspaceId === workspaceId).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, limit); }
   async addAuditEvent(event: Omit<AuditEvent, "id" | "createdAt">) { const item = { ...event, id: id("audit"), createdAt: now() }; this.audits.set(item.id, item); return item; }
@@ -221,6 +245,9 @@ class PostgresStore implements Store {
   async getApiKeyByHash(keyHash: string) { const result = await this.pool.query("UPDATE gbolix_api_keys SET last_used_at=NOW() WHERE key_hash=$1 AND status='active' RETURNING *", [keyHash]); return result.rows[0] ? apiKeyRow(result.rows[0]) : undefined; }
   async listApiKeys(agentId: string, workspaceId: string) { const result = await this.pool.query("SELECT * FROM gbolix_api_keys WHERE agent_id=$1 AND workspace_id=$2 ORDER BY created_at DESC", [agentId, workspaceId]); return result.rows.map((row) => ({ ...apiKeyRow(row), keyHash: "" })); }
   async revokeApiKey(id: string, agentId: string, workspaceId: string) { const result = await this.pool.query("UPDATE gbolix_api_keys SET status='revoked' WHERE id=$1 AND agent_id=$2 AND workspace_id=$3", [id, agentId, workspaceId]); return result.rowCount === 1; }
+  async createConnection(input: { agentId: string; workspaceId: string; kind: AgentConnection["kind"]; provider: string; name: string; endpoint?: string; method?: AgentConnection["method"]; authType?: AgentConnection["authType"]; encryptedSecret?: string; headers?: Record<string, string>; parameters?: Record<string, string>; permissions: string[] }) { const result = await this.pool.query("INSERT INTO gbolix_agent_connections (id,agent_id,workspace_id,kind,provider,name,endpoint,method,auth_type,encrypted_secret,headers,parameters,status,permissions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'connected',$13) RETURNING *", [id("conn"), input.agentId, input.workspaceId, input.kind, input.provider, input.name, input.endpoint ?? null, input.method ?? null, input.authType ?? null, input.encryptedSecret ?? null, JSON.stringify(input.headers ?? {}), JSON.stringify(input.parameters ?? {}), JSON.stringify(input.permissions)]); return connectionRow(result.rows[0]); }
+  async listConnections(agentId: string, workspaceId: string) { const result = await this.pool.query("SELECT * FROM gbolix_agent_connections WHERE agent_id=$1 AND workspace_id=$2 ORDER BY updated_at DESC", [agentId, workspaceId]); return result.rows.map(connectionRow); }
+  async deleteConnection(id: string, agentId: string, workspaceId: string) { const result = await this.pool.query("DELETE FROM gbolix_agent_connections WHERE id=$1 AND agent_id=$2 AND workspace_id=$3", [id, agentId, workspaceId]); return result.rowCount === 1; }
   async addUsageEvent(event: UsageEvent) { const result = await this.pool.query("INSERT INTO gbolix_usage_events (request_id,workspace_id,agent_id,conversation_id,model,input_tokens,output_tokens,tool_calls,credits,status,channel) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (request_id) DO UPDATE SET request_id=EXCLUDED.request_id RETURNING *", [event.requestId, event.workspaceId, event.agentId, event.conversationId, event.model, event.inputTokens, event.outputTokens, event.toolCalls, event.credits, event.status, event.channel]); return usageRow(result.rows[0]); }
   async listUsage(agentId: string, workspaceId: string, limit: number) { const result = await this.pool.query("SELECT * FROM gbolix_usage_events WHERE agent_id=$1 AND workspace_id=$2 ORDER BY created_at DESC LIMIT $3", [agentId, workspaceId, limit]); return result.rows.map(usageRow); }
   async addAuditEvent(event: Omit<AuditEvent, "id" | "createdAt">) { const result = await this.pool.query("INSERT INTO gbolix_audit_logs (id,actor_id,workspace_id,action,target_type,target_id,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *", [id("audit"), event.actorId, event.workspaceId, event.action, event.targetType, event.targetId, JSON.stringify(event.metadata)]); return auditRow(result.rows[0]); }
@@ -245,6 +272,7 @@ function knowledgeRow(row: any): KnowledgeSource { return { id: row.id, agentId:
 function conversationRow(row: any): Conversation { return { id: row.id, agentId: row.agent_id, workspaceId: row.workspace_id, channel: row.channel, visitorKey: row.visitor_key, status: row.status, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() }; }
 function messageRow(row: any): Message { return { id: row.id, conversationId: row.conversation_id, role: row.role, content: row.content, toolName: row.tool_name ?? undefined, createdAt: new Date(row.created_at).toISOString() }; }
 function deploymentRow(row: any, prefix = ""): Deployment { return { id: row[`${prefix}id`] ?? row.id, agentId: row[`${prefix}agent_id`] ?? row.agent_id, workspaceId: row[`${prefix}workspace_id`] ?? row.workspace_id, channel: row[`${prefix}channel`] ?? row.channel, allowedOrigin: row[`${prefix}allowed_origin`] ?? row.allowed_origin ?? undefined, tokenPrefix: row[`${prefix}token_prefix`] ?? row.token_prefix, status: row[`${prefix}status`] ?? row.status, createdAt: new Date(row[`${prefix}created_at`] ?? row.created_at).toISOString(), updatedAt: new Date(row[`${prefix}updated_at`] ?? row.updated_at).toISOString() }; }
+function connectionRow(row: any): AgentConnection { return { id: row.id, agentId: row.agent_id, workspaceId: row.workspace_id, kind: row.kind, provider: row.provider, name: row.name, endpoint: row.endpoint ?? undefined, method: row.method ?? undefined, authType: row.auth_type ?? undefined, status: row.status, permissions: Array.isArray(row.permissions) ? row.permissions : [], createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() }; }
 function apiKeyRow(row: any): ApiKeyRecord { return { id: row.id, agentId: row.agent_id, workspaceId: row.workspace_id, keyPrefix: row.key_prefix, keyHash: row.key_hash, status: row.status, createdAt: new Date(row.created_at).toISOString(), lastUsedAt: row.last_used_at ? new Date(row.last_used_at).toISOString() : undefined }; }
 function auditRow(row: any): AuditEvent { return { id: row.id, actorId: row.actor_id, workspaceId: row.workspace_id, action: row.action, targetType: row.target_type, targetId: row.target_id, metadata: row.metadata ?? {}, createdAt: new Date(row.created_at).toISOString() }; }
 function usageRow(row: any): UsageEvent { return { requestId: row.request_id, workspaceId: row.workspace_id, agentId: row.agent_id, conversationId: row.conversation_id, model: row.model, inputTokens: row.input_tokens, outputTokens: row.output_tokens, toolCalls: row.tool_calls, credits: row.credits, status: row.status, channel: row.channel, createdAt: new Date(row.created_at).toISOString() }; }
