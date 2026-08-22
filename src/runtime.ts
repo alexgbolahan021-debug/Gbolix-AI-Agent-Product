@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 import { config } from "./config.js";
 import { CreditError, CreditService } from "./credits.js";
-import { complete, type ChatMessage } from "./provider.js";
+import { complete, type ChatMessage, type ToolDefinition } from "./provider.js";
 import { executeTool, BUILTIN_TOOLS } from "./tools.js";
-import type { AgentMessageInput, AgentMessageOutput, Identity, Store } from "./types.js";
+import type { AgentConnection, AgentMessageInput, AgentMessageOutput, Identity, Store, StoredAgentConnection } from "./types.js";
 
 export class AgentRuntime {
   constructor(private readonly store: Store, private readonly credits: CreditService) {}
@@ -35,8 +35,12 @@ export class AgentRuntime {
       const retrievedKnowledge = selectKnowledge(knowledge, input.message);
       const system = buildSystemPrompt(agent, retrievedKnowledge.map((item) => `### ${item.title}\n${item.content}`).join("\n\n"));
       const messages: ChatMessage[] = [{ role: "system", content: system }, ...history.slice(-24).map((item) => ({ role: item.role, content: item.content, ...(item.toolName ? { name: item.toolName } : {}) }))];
-      const tools = agent.level >= 3 ? agent.enabledTools.map((name) => BUILTIN_TOOLS[name]).filter(Boolean) : [];
+      const connections = agent.level >= 3 ? await this.store.listConnections(agent.id, identity.workspaceId) : [];
+      const customConnections = connections.filter((connection) => connection.kind === "custom_api");
+      const customToolMap = new Map(customConnections.map((connection) => [customToolName(connection), connection]));
+      const tools: ToolDefinition[] = agent.level >= 3 ? [...agent.enabledTools.map((name) => BUILTIN_TOOLS[name]).filter(Boolean), ...customConnections.map(customConnectionTool)] : [];
       const explicitContact = agent.level >= 3 && agent.enabledTools.includes("capture_contact") ? extractExplicitContactRequest(input.message) : undefined;
+      const explicitCustomConnection = !explicitContact ? customConnections.find((connection) => explicitCustomRequest(input.message, connection)) : undefined;
       let completion;
       let toolCalls = 0;
       let handoff = false;
@@ -47,6 +51,13 @@ export class AgentRuntime {
         messages.push({ role: "tool", content: result.output, tool_call_id: `direct_capture_${requestId}`, name: "capture_contact" });
         await this.store.addMessage({ conversationId: currentConversation.id, role: "tool", content: result.output, toolName: "capture_contact" });
         completion = { content: `Thanks ${explicitContact.name}. I’ve recorded your contact details for a callback from the Gbolix team.`, toolCalls: [], inputTokens: 0, outputTokens: 0 };
+      } else if (explicitCustomConnection) {
+        const result = await executeCustomApiConnection(explicitCustomConnection, "{}");
+        toolCalls = 1;
+        messages.push({ role: "assistant", content: "" });
+        messages.push({ role: "tool", content: result.output, tool_call_id: `direct_custom_api_${requestId}`, name: customToolName(explicitCustomConnection) });
+        await this.store.addMessage({ conversationId: currentConversation.id, role: "tool", content: result.output, toolName: customToolName(explicitCustomConnection) });
+        completion = { content: `I checked ${explicitCustomConnection.name}. The connected system returned: ${result.output.slice(0, 1200)}`, toolCalls: [], inputTokens: 0, outputTokens: 0 };
       } else {
         completion = await complete({ model: agent.model || config.defaultModel, messages, tools });
       }
@@ -54,7 +65,8 @@ export class AgentRuntime {
         toolCalls += completion.toolCalls.length;
         messages.push({ role: "assistant", content: completion.content || "" });
         for (const call of completion.toolCalls) {
-          const result = await executeTool(call.function.name, call.function.arguments);
+          const customConnection = customToolMap.get(call.function.name);
+          const result = customConnection ? await executeCustomApiConnection(customConnection, call.function.arguments) : await executeTool(call.function.name, call.function.arguments);
           handoff = handoff || result.handoff;
           messages.push({ role: "tool", content: result.output, tool_call_id: call.id, name: call.function.name });
           await this.store.addMessage({ conversationId: currentConversation.id, role: "tool", content: result.output, toolName: call.function.name });
@@ -84,6 +96,11 @@ function buildSystemPrompt(agent: { name: string; instructions: string; tone: st
 }
 
 
+function customToolName(connection: AgentConnection): string { return `custom_api_${connection.id.replace(/[^a-zA-Z0-9_]/g, "_")}`; }
+function customConnectionTool(connection: AgentConnection): ToolDefinition { return { type: "function", function: { name: customToolName(connection), description: `Use the connected Custom API tool ${connection.name}. Only call it when the visitor explicitly asks for this check.`, parameters: { type: "object", properties: { parameters: { type: "object", additionalProperties: { type: "string" } }, body: { type: "object", additionalProperties: true } }, additionalProperties: false } } }; }
+function explicitCustomRequest(message: string, connection: AgentConnection): boolean { const normalized = message.toLowerCase(); return normalized.includes("custom api") || normalized.includes(connection.name.toLowerCase()) || /\b(check|look up|fetch|query|call)\b/.test(normalized) && /\b(order|status|account|record|endpoint)\b/.test(normalized); }
+async function executeCustomApiConnection(connection: StoredAgentConnection, rawArguments: string): Promise<{ output: string; handoff: boolean }> { let args: Record<string, unknown> = {}; try { args = JSON.parse(rawArguments) as Record<string, unknown>; } catch { return { output: "The Custom API input was invalid, so no request was made.", handoff: false }; } const target = new URL(connection.endpoint ?? ""); const parameters = args.parameters && typeof args.parameters === "object" && !Array.isArray(args.parameters) ? args.parameters as Record<string, unknown> : {}; if (connection.method === "GET" || connection.method === "DELETE") Object.entries(parameters).forEach(([key, value]) => { if (typeof value === "string" && key.length <= 80) target.searchParams.set(key, value.slice(0, 300)); }); const headers: Record<string, string> = { accept: "application/json,text/plain", ...(connection.headers ?? {}) }; const secret = connection.encryptedSecret ? openSecret(connection.encryptedSecret) : undefined; if (secret && connection.authType === "bearer") headers.authorization = `Bearer ${secret}`; if (secret && connection.authType === "api_key") headers["x-api-key"] = secret; const init: RequestInit = { method: connection.method ?? "GET", headers, signal: AbortSignal.timeout(10000) }; if (init.method !== "GET" && init.method !== "DELETE") { headers["content-type"] = "application/json"; init.body = JSON.stringify(args.body && typeof args.body === "object" ? args.body : {}); } const response = await fetch(target, init); const text = (await response.text()).slice(0, 12000); if (!response.ok) return { output: JSON.stringify({ ok: false, status: response.status, error: "Connected API request failed", detail: text.slice(0, 500) }), handoff: false }; let data: unknown = text; try { data = JSON.parse(text); } catch { /* keep text */ } return { output: JSON.stringify({ ok: true, status: response.status, data }), handoff: false }; }
+function openSecret(value: string): string { if (!config.connectionEncryptionKey) throw new Error("Connection encryption is not configured."); const [version, ivEncoded, tagEncoded, ciphertextEncoded] = value.split(":"); if (version !== "v1" || !ivEncoded || !tagEncoded || !ciphertextEncoded) throw new Error("Stored connection secret is invalid."); const key = crypto.createHash("sha256").update(config.connectionEncryptionKey).digest(); const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(ivEncoded, "base64url")); decipher.setAuthTag(Buffer.from(tagEncoded, "base64url")); return Buffer.concat([decipher.update(Buffer.from(ciphertextEncoded, "base64url")), decipher.final()]).toString("utf8"); }
 function extractExplicitContactRequest(message: string): { name: string; email: string; phone: string; note: string } | undefined {
   const email = message.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
   const asksForFollowUp = /\b(callback|call me|follow[ -]?up|contact me|reach me|sales team|speak with sales)\b/i.test(message);
