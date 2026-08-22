@@ -36,17 +36,19 @@ export class AgentRuntime {
       const system = buildSystemPrompt(agent, retrievedKnowledge.map((item) => `### ${item.title}\n${item.content}`).join("\n\n"));
       const messages: ChatMessage[] = [{ role: "system", content: system }, ...history.slice(-24).map((item) => ({ role: item.role, content: item.content, ...(item.toolName ? { name: item.toolName } : {}) }))];
       const tools = agent.level >= 3 ? agent.enabledTools.map((name) => BUILTIN_TOOLS[name]).filter(Boolean) : [];
-      let completion = await complete({ model: agent.model || config.defaultModel, messages, tools });
+      const explicitContact = agent.level >= 3 && agent.enabledTools.includes("capture_contact") ? extractExplicitContactRequest(input.message) : undefined;
+      let completion;
       let toolCalls = 0;
       let handoff = false;
-      const explicitContact = agent.level >= 3 && agent.enabledTools.includes("capture_contact") ? extractExplicitContactRequest(input.message) : undefined;
-      if (explicitContact && !completion.toolCalls.length) {
+      if (explicitContact) {
         const result = await executeTool("capture_contact", JSON.stringify(explicitContact));
         toolCalls = 1;
         messages.push({ role: "assistant", content: "" });
         messages.push({ role: "tool", content: result.output, tool_call_id: `direct_capture_${requestId}`, name: "capture_contact" });
         await this.store.addMessage({ conversationId: currentConversation.id, role: "tool", content: result.output, toolName: "capture_contact" });
-        completion = { ...completion, content: `Thanks ${explicitContact.name}. I’ve recorded your contact details for a callback from the Gbolix team.`, toolCalls: [] };
+        completion = { content: `Thanks ${explicitContact.name}. I’ve recorded your contact details for a callback from the Gbolix team.`, toolCalls: [], inputTokens: 0, outputTokens: 0 };
+      } else {
+        completion = await complete({ model: agent.model || config.defaultModel, messages, tools });
       }
       for (let round = 0; round < config.maxToolRounds && completion.toolCalls.length; round += 1) {
         toolCalls += completion.toolCalls.length;
