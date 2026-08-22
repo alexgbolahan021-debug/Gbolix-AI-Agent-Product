@@ -46,6 +46,8 @@ export async function ensureSchema(pool: Pool): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS gbolix_agents_workspace_idx ON gbolix_agents(workspace_id);
     ALTER TABLE gbolix_agents ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 1;
+    UPDATE gbolix_agents SET level=3 WHERE enabled_tools <> '[]'::jsonb AND level=1;
+    UPDATE gbolix_agents SET level=2 WHERE level=1 AND EXISTS (SELECT 1 FROM gbolix_knowledge WHERE gbolix_knowledge.agent_id=gbolix_agents.id);
     CREATE TABLE IF NOT EXISTS gbolix_agent_versions (
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE,

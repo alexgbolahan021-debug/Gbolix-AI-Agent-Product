@@ -30,12 +30,12 @@ export class AgentRuntime {
     }
 
     try {
-      const knowledge = await this.store.listKnowledge(agent.id, identity.workspaceId);
+      const knowledge = agent.level >= 2 ? await this.store.listKnowledge(agent.id, identity.workspaceId) : [];
       const history = await this.store.listMessages(currentConversation.id);
       const retrievedKnowledge = selectKnowledge(knowledge, input.message);
       const system = buildSystemPrompt(agent, retrievedKnowledge.map((item) => `### ${item.title}\n${item.content}`).join("\n\n"));
       const messages: ChatMessage[] = [{ role: "system", content: system }, ...history.slice(-24).map((item) => ({ role: item.role, content: item.content, ...(item.toolName ? { name: item.toolName } : {}) }))];
-      const tools = agent.enabledTools.map((name) => BUILTIN_TOOLS[name]).filter(Boolean);
+      const tools = agent.level >= 3 ? agent.enabledTools.map((name) => BUILTIN_TOOLS[name]).filter(Boolean) : [];
       let completion = await complete({ model: agent.model || config.defaultModel, messages, tools });
       let toolCalls = 0;
       let handoff = false;
