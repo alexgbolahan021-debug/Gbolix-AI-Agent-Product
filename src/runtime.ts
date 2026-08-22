@@ -39,6 +39,15 @@ export class AgentRuntime {
       let completion = await complete({ model: agent.model || config.defaultModel, messages, tools });
       let toolCalls = 0;
       let handoff = false;
+      const explicitContact = agent.level >= 3 && agent.enabledTools.includes("capture_contact") ? extractExplicitContactRequest(input.message) : undefined;
+      if (explicitContact && !completion.toolCalls.length) {
+        const result = await executeTool("capture_contact", JSON.stringify(explicitContact));
+        toolCalls = 1;
+        messages.push({ role: "assistant", content: "" });
+        messages.push({ role: "tool", content: result.output, tool_call_id: `direct_capture_${requestId}`, name: "capture_contact" });
+        await this.store.addMessage({ conversationId: currentConversation.id, role: "tool", content: result.output, toolName: "capture_contact" });
+        completion = { ...completion, content: `Thanks ${explicitContact.name}. I’ve recorded your contact details for a callback from the Gbolix team.`, toolCalls: [] };
+      }
       for (let round = 0; round < config.maxToolRounds && completion.toolCalls.length; round += 1) {
         toolCalls += completion.toolCalls.length;
         messages.push({ role: "assistant", content: completion.content || "" });
@@ -70,4 +79,14 @@ function selectKnowledge<T extends { title: string; content: string }>(sources: 
 
 function buildSystemPrompt(agent: { name: string; instructions: string; tone: string; welcomeMessage: string }, knowledge: string): string {
   return [`You are ${agent.name}, a business AI agent powered by Gbolix.`, `Follow these business instructions exactly:\n${agent.instructions}`, `Use this tone: ${agent.tone}.`, "Never invent business facts. If the knowledge does not answer a question, say so and offer a human handoff.", "Only use tools that are explicitly enabled. Do not claim an action happened unless a tool result confirms it.", `If the visitor asks for a human, cannot be helped safely, or expresses a complaint, offer a human handoff.`, `Welcome message: ${agent.welcomeMessage}`, knowledge ? `Knowledge:\n${knowledge}` : "Knowledge: No business knowledge has been added yet."].join("\n\n");
+}
+
+
+function extractExplicitContactRequest(message: string): { name: string; email: string; phone: string; note: string } | undefined {
+  const email = message.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0];
+  const asksForFollowUp = /\b(callback|call me|follow[ -]?up|contact me|reach me|sales team|speak with sales)\b/i.test(message);
+  if (!email || !asksForFollowUp) return undefined;
+  const name = message.match(/\b(?:my name is|i am|i'm)\s+([A-Z][A-Za-z'-]+(?:\s+[A-Z][A-Za-z'-]+){0,3})/i)?.[1]?.trim() || "Visitor";
+  const phone = message.match(/(?:\+?\d[\d\s().-]{7,}\d)/)?.[0]?.trim() || "";
+  return { name, email, phone, note: message.trim().slice(0, 240) };
 }
