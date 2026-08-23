@@ -1,0 +1,62 @@
+name: Repair PostgresStore
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add missing PostgresStore admin revoke method
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          path = Path("src/store.ts")
+          text = path.read_text()
+
+          class_start = text.index("class PostgresStore implements Store {")
+          class_end = text.index("function hash(", class_start)
+          section = text[class_start:class_end]
+
+          if "async adminRevokeDeployment(deploymentId: string)" in section:
+              print("PostgresStore already contains adminRevokeDeployment")
+          else:
+              pattern = r'(  async revokeDeployment\(deploymentId: string, agentId: string, workspaceId: string\) \{.*?\n)'
+              match = re.search(pattern, section, re.DOTALL)
+              if not match:
+                  raise SystemExit("Could not locate PostgresStore.revokeDeployment; refusing to modify the file")
+              method = '  async adminRevokeDeployment(deploymentId: string) { const result = await this.pool.query("UPDATE gbolix_deployments SET status=\'revoked\',updated_at=NOW() WHERE id=$1", [deploymentId]); return result.rowCount === 1; }\n'
+              section = section[:match.end()] + method + section[match.end():]
+              text = text[:class_start] + section + text[class_end:]
+              path.write_text(text)
+              print("Inserted PostgresStore.adminRevokeDeployment")
+
+      - name: Verify build
+        run: npm install && npm run build
+
+      - name: Commit verified repair and remove workflow
+        shell: bash
+        run: |
+          if git diff --quiet -- src/store.ts; then
+            echo "No source change was required."
+            rm -f .github/workflows/fix-postgres-store.yml
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .github/workflows/fix-postgres-store.yml
+            git commit -m "chore: remove temporary repair workflow"
+            git push
+            exit 0
+          fi
+          rm -f .github/workflows/fix-postgres-store.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/store.ts .github/workflows/fix-postgres-store.yml
+          git commit -m "fix: implement admin revoke in PostgresStore"
+          git push
