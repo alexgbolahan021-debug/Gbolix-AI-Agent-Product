@@ -175,6 +175,7 @@ export type Store = {
   adminConversation(conversationId: string): Promise<{ conversation: AdminConversation; messages: Message[] } | undefined>;
   adminUsage(limit: number): Promise<AdminUsageEvent[]>;
   adminDeployments(limit: number): Promise<AdminDeployment[]>;
+  adminRevokeDeployment(deploymentId: string): Promise<boolean>;
   adminKnowledge(limit: number): Promise<AdminKnowledge[]>;
   adminTools(): Promise<AdminTool[]>;
   adminActivity(limit: number): Promise<AdminActivity[]>;
