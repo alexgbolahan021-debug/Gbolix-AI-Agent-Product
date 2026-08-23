@@ -19,6 +19,7 @@ export const config = {
   creditMode: process.env.CREDIT_MODE ?? "local",
   platformUrl: process.env.GBOLIX_PLATFORM_URL,
   platformToken: process.env.GBOLIX_PLATFORM_TOKEN,
+  frontendUrl: process.env.GBOLIX_FRONTEND_URL ?? "https://gbolix.site",
   agentJwtSecret: process.env.AGENT_JWT_SECRET,
   connectionEncryptionKey: process.env.AGENT_CONNECTION_ENCRYPTION_KEY ?? process.env.AGENT_JWT_SECRET,
   hubspotClientId: process.env.HUBSPOT_CLIENT_ID,
