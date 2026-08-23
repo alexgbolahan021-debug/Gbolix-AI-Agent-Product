@@ -175,29 +175,14 @@ export type Store = {
   adminConversation(conversationId: string): Promise<{ conversation: AdminConversation; messages: Message[] } | undefined>;
   adminUsage(limit: number): Promise<AdminUsageEvent[]>;
   adminDeployments(limit: number): Promise<AdminDeployment[]>;
-  adminRevokeDeployment(deploymentId: string): Promise<boolean>;
   adminKnowledge(limit: number): Promise<AdminKnowledge[]>;
   adminTools(): Promise<AdminTool[]>;
   adminActivity(limit: number): Promise<AdminActivity[]>;
 };
 
-
 export type AdminCustomer = { workspaceId: string; customerName?: string; customerEmail?: string; agents: number; responses: number; creditsUsed: number };
-
-export type AdminAgent = Agent & {
-  knowledgeCount: number;
-  conversationCount: number;
-  responses: number;
-  creditsUsed: number;
-  deploymentCount: number;
-};
-
-export type AdminConversation = Conversation & {
-  agentName: string;
-  messageCount: number;
-  lastMessage?: string;
-};
-
+export type AdminAgent = Agent & { knowledgeCount: number; conversationCount: number; responses: number; creditsUsed: number; deploymentCount: number };
+export type AdminConversation = Conversation & { agentName: string; messageCount: number; lastMessage?: string };
 export type AdminUsageEvent = UsageEvent & { agentName: string };
 export type AdminDeployment = Deployment & { agentName: string };
 export type AdminKnowledge = KnowledgeSource & { agentName: string };
