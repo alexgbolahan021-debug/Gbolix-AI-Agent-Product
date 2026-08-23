@@ -10,6 +10,7 @@ import { CreditError, CreditService } from "./credits.js";
 import { AgentRuntime } from "./runtime.js";
 import { BUILTIN_TOOLS } from "./tools.js";
 import { createStore, hash } from "./store.js";
+import { callbackPage, completeOAuth, createAuthorizationUrl, oauthConfigured, type OAuthProvider } from "./oauth.js";
 import type { Agent, AgentConnection, ConversationStatus, Identity } from "./types.js";
 
 const store = await createStore();
@@ -71,6 +72,35 @@ app.patch("/v1/conversations/:conversationId", withIdentity(async (request, resp
 app.post("/v1/agents/:agentId/deployments", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); const body = request.body as any; const allowedOrigin = typeof body.allowedOrigin === "string" ? normalizeOrigin(body.allowedOrigin) : undefined; if (body.allowedOrigin && !allowedOrigin) return response.status(400).json({ error: "allowedOrigin must be a valid website origin such as https://example.com" }); const deployment = await store.createDeployment({ agentId: agent.id, workspaceId: identity.workspaceId, channel: "website", allowedOrigin, tokenPrefix: "", status: "active" }); const shareableLink = `${publicBaseUrl(request)}/widget?agent=${encodeURIComponent(agent.id)}&token=${encodeURIComponent(deployment.plaintextToken ?? "")}`; return response.status(201).json({ deployment, shareableLink, embedCode: `<script src="${publicBaseUrl(request)}/widget.js" data-gbolix-agent="${agent.id}" data-gbolix-token="${deployment.plaintextToken}" async></script>` }); }));
 app.get("/v1/agents/:agentId/deployments", withIdentity(async (request, response, identity) => response.json(await store.listDeployments(String(request.params.agentId), identity.workspaceId))));
 app.delete("/v1/agents/:agentId/deployments/:deploymentId", withIdentity(async (request, response, identity) => { const removed = await store.revokeDeployment(String(request.params.deploymentId), String(request.params.agentId), identity.workspaceId); return removed ? response.status(204).send() : response.status(404).json({ error: "Deployment not found" }); }));
+
+app.get("/v1/agents/:agentId/connections/oauth/:provider/start", withIdentity(async (request, response, identity) => {
+  const provider = String(request.params.provider) as OAuthProvider;
+  if (!["hubspot", "google_gmail", "google_calendar"].includes(provider)) return response.status(400).json({ error: "Unsupported OAuth provider" });
+  const agent = await store.getAgent(String(request.params.agentId));
+  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
+  if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required to connect tools and external systems.", code: "LEVEL_REQUIRED", level: 3 });
+  if (!oauthConfigured(provider)) return response.status(503).json({ error: `${provider} OAuth is not configured on the server.`, code: "OAUTH_PROVIDER_NOT_CONFIGURED" });
+  const redirectUri = `${publicBaseUrl(request)}/v1/oauth/${provider}/callback`;
+  return response.json({ provider, authorizationUrl: createAuthorizationUrl(provider, agent.id, identity.workspaceId, redirectUri), redirectUri });
+}));
+
+for (const provider of ["hubspot", "google_gmail", "google_calendar"] as const) {
+  app.get(`/v1/oauth/${provider}/callback`, async (request, response) => {
+    try {
+      const error = typeof request.query.error === "string" ? request.query.error : undefined;
+      if (error) return response.status(400).type("html").send(callbackPage(false, `Authorization was not completed: ${error}`));
+      const code = typeof request.query.code === "string" ? request.query.code : "";
+      const state = typeof request.query.state === "string" ? request.query.state : "";
+      if (!code || !state) return response.status(400).type("html").send(callbackPage(false, "The OAuth callback was missing the authorization code or state."));
+      const redirectUri = `${publicBaseUrl(request)}/v1/oauth/${provider}/callback`;
+      await completeOAuth(store, code, state, redirectUri);
+      return response.type("html").send(callbackPage(true, "The connection is now active. You can close this window and return to Gbolix."));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to complete the OAuth connection.";
+      return response.status(400).type("html").send(callbackPage(false, message));
+    }
+  });
+}
 app.get("/v1/agents/:agentId/connections", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); return response.json(agent.level >= 3 ? await store.listConnections(agent.id, identity.workspaceId) : []); }));
 app.post("/v1/agents/:agentId/connections", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required to connect tools and external systems.", code: "LEVEL_REQUIRED", level: 3 }); const body = request.body as Record<string, unknown>; const kind = body.kind === "custom_api" ? "custom_api" : body.kind === "native" ? "native" : undefined; const provider = typeof body.provider === "string" ? body.provider.trim().slice(0, 80) : ""; const name = typeof body.name === "string" ? body.name.trim().slice(0, 120) : ""; if (!kind || !provider || !name) return response.status(400).json({ error: "kind, provider, and name are required" }); if (kind === "native") return response.status(501).json({ error: "Native OAuth connections are not enabled yet. Configure a Custom API connection or add the provider OAuth credentials first.", code: "OAUTH_PROVIDER_NOT_CONFIGURED" }); const rawEndpoint = typeof body.endpoint === "string" ? body.endpoint.trim() : ""; const endpoint = await safeKnowledgeUrl(rawEndpoint); if (!endpoint) return response.status(400).json({ error: "endpoint must be a public http(s) URL" }); const method = ["GET", "POST", "PUT", "PATCH", "DELETE"].includes(String(body.method).toUpperCase()) ? String(body.method).toUpperCase() as AgentConnection["method"] : "GET"; const authType = body.authType === "api_key" || body.authType === "bearer" ? body.authType : "none"; const secret = typeof body.secret === "string" ? body.secret : ""; if (authType !== "none" && !secret) return response.status(400).json({ error: "A secret is required for API key or Bearer authentication" }); const headers = safeStringMap(body.headers); const parameters = safeStringMap(body.parameters); const encryptedSecret = secret ? sealSecret(secret) : undefined; const connection = await store.createConnection({ agentId: agent.id, workspaceId: identity.workspaceId, kind, provider, name, endpoint: endpoint.toString(), method, authType, encryptedSecret, headers, parameters, permissions: Array.isArray(body.permissions) ? body.permissions.filter((item): item is string => typeof item === "string").slice(0, 10) : [] }); await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "connection.create", targetType: "agent", targetId: agent.id, metadata: { kind, provider } }); return response.status(201).json(connection); }));
 app.delete("/v1/agents/:agentId/connections/:connectionId", withIdentity(async (request, response, identity) => { const removed = await store.deleteConnection(String(request.params.connectionId), String(request.params.agentId), identity.workspaceId); return removed ? response.status(204).send() : response.status(404).json({ error: "Connection not found" }); }));
