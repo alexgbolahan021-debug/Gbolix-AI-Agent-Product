@@ -3,25 +3,7 @@ import { Pool } from "pg";
 import { config } from "./config.js";
 import { BUILTIN_TOOLS } from "./tools.js";
 import type {
-  AdminActivity,
-  AdminAgent,
-  AdminConversation,
-  AdminDeployment,
-  AdminKnowledge,
-  AdminTool,
-  AdminUsageEvent,
-  AuditEvent,
-  Agent,
-  AgentVersion,
-  ApiKeyRecord,
-  AgentConnection,
-  Conversation,
-  ConversationStatus,
-  Deployment,
-  KnowledgeSource,
-  Message,
-  Store,
-  UsageEvent,
+  AdminActivity, AdminAgent, AdminConversation, AdminDeployment, AdminKnowledge, AdminTool, AdminUsageEvent, AuditEvent, Agent, AgentConnection, AgentVersion, ApiKeyRecord, Conversation, ConversationStatus, Deployment, KnowledgeSource, Message, Store, UsageEvent,
 } from "./types.js";
 
 const now = () => new Date().toISOString();
@@ -30,158 +12,44 @@ const id = (prefix: string) => `${prefix}_${crypto.randomBytes(8).toString("hex"
 export async function ensureSchema(pool: Pool): Promise<void> {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS gbolix_agents (
-      id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
-      instructions TEXT NOT NULL,
-      tone TEXT NOT NULL DEFAULT 'warm, concise, and helpful',
-      model TEXT NOT NULL,
-      level INTEGER NOT NULL DEFAULT 1,
-      status TEXT NOT NULL DEFAULT 'draft',
-
-      welcome_message TEXT NOT NULL DEFAULT 'Hi! How can I help you today?',
-      enabled_tools JSONB NOT NULL DEFAULT '[]'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', instructions TEXT NOT NULL, tone TEXT NOT NULL DEFAULT 'warm, concise, and helpful', model TEXT NOT NULL, level INTEGER NOT NULL DEFAULT 1, status TEXT NOT NULL DEFAULT 'draft', welcome_message TEXT NOT NULL DEFAULT 'Hi! How can I help you today?', enabled_tools JSONB NOT NULL DEFAULT '[]'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE INDEX IF NOT EXISTS gbolix_agents_workspace_idx ON gbolix_agents(workspace_id);
     ALTER TABLE gbolix_agents ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 1;
     UPDATE gbolix_agents SET level=3 WHERE enabled_tools <> '[]'::jsonb AND level=1;
     UPDATE gbolix_agents SET level=2 WHERE level=1 AND EXISTS (SELECT 1 FROM gbolix_knowledge WHERE gbolix_knowledge.agent_id=gbolix_agents.id);
-    CREATE TABLE IF NOT EXISTS gbolix_agent_versions (
-      id TEXT PRIMARY KEY,
-      agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE,
-      workspace_id TEXT NOT NULL,
-      version INTEGER NOT NULL,
-      config JSONB NOT NULL,
-      created_by TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      UNIQUE(agent_id, version)
-    );
+    UPDATE gbolix_agents SET status='draft' WHERE status IS NULL;
+    ALTER TABLE gbolix_agents ALTER COLUMN status SET DEFAULT 'draft';
+    ALTER TABLE gbolix_agents ALTER COLUMN status SET NOT NULL;
+    CREATE TABLE IF NOT EXISTS gbolix_agent_versions (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL, version INTEGER NOT NULL, config JSONB NOT NULL, created_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(agent_id, version));
     CREATE INDEX IF NOT EXISTS gbolix_agent_versions_agent_idx ON gbolix_agent_versions(agent_id, workspace_id, version DESC);
-    CREATE TABLE IF NOT EXISTS gbolix_knowledge (
-      id TEXT PRIMARY KEY,
-      agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE,
-      workspace_id TEXT NOT NULL,
-      title TEXT NOT NULL,
-      content TEXT NOT NULL,
-      source_type TEXT NOT NULL DEFAULT 'text',
-      status TEXT NOT NULL DEFAULT 'ready',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
+    CREATE TABLE IF NOT EXISTS gbolix_knowledge (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL, title TEXT NOT NULL, content TEXT NOT NULL, source_type TEXT NOT NULL DEFAULT 'text', status TEXT NOT NULL DEFAULT 'ready', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE INDEX IF NOT EXISTS gbolix_knowledge_agent_idx ON gbolix_knowledge(agent_id, workspace_id);
-    CREATE TABLE IF NOT EXISTS gbolix_conversations (
-      id TEXT PRIMARY KEY,
-      agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE,
-      workspace_id TEXT NOT NULL,
-      channel TEXT NOT NULL,
-      visitor_key TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'open',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
+    CREATE TABLE IF NOT EXISTS gbolix_conversations (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL, channel TEXT NOT NULL, visitor_key TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'open', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE INDEX IF NOT EXISTS gbolix_conversations_agent_idx ON gbolix_conversations(agent_id, workspace_id, updated_at DESC);
-    CREATE TABLE IF NOT EXISTS gbolix_messages (
-      id TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES gbolix_conversations(id) ON DELETE CASCADE,
-      role TEXT NOT NULL,
-      content TEXT NOT NULL,
-      tool_name TEXT,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
+    CREATE TABLE IF NOT EXISTS gbolix_messages (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES gbolix_conversations(id) ON DELETE CASCADE, role TEXT NOT NULL, content TEXT NOT NULL, tool_name TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE INDEX IF NOT EXISTS gbolix_messages_conversation_idx ON gbolix_messages(conversation_id, created_at);
-    CREATE TABLE IF NOT EXISTS gbolix_deployments (
-      id TEXT PRIMARY KEY,
-      agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE,
-      workspace_id TEXT NOT NULL,
-      channel TEXT NOT NULL,
-      allowed_origin TEXT,
-      token_prefix TEXT NOT NULL,
-      public_token_hash TEXT NOT NULL UNIQUE,
-      status TEXT NOT NULL DEFAULT 'active',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
+    CREATE TABLE IF NOT EXISTS gbolix_deployments (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL, channel TEXT NOT NULL, allowed_origin TEXT, token_prefix TEXT NOT NULL, public_token_hash TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE INDEX IF NOT EXISTS gbolix_deployments_token_idx ON gbolix_deployments(public_token_hash);
-    CREATE TABLE IF NOT EXISTS gbolix_api_keys (
-      id TEXT PRIMARY KEY,
-      agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE,
-      workspace_id TEXT NOT NULL,
-      key_prefix TEXT NOT NULL,
-      key_hash TEXT NOT NULL UNIQUE,
-      status TEXT NOT NULL DEFAULT 'active',
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      last_used_at TIMESTAMPTZ
-    );
-    CREATE TABLE IF NOT EXISTS gbolix_agent_connections (
-      id TEXT PRIMARY KEY,
-      agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE,
-      workspace_id TEXT NOT NULL,
-      kind TEXT NOT NULL,
-      provider TEXT NOT NULL,
-      name TEXT NOT NULL,
-      endpoint TEXT,
-      method TEXT,
-      auth_type TEXT,
-      encrypted_secret TEXT,
-      headers JSONB NOT NULL DEFAULT '{}'::jsonb,
-      parameters JSONB NOT NULL DEFAULT '{}'::jsonb,
-      status TEXT NOT NULL DEFAULT 'connected',
-      permissions JSONB NOT NULL DEFAULT '[]'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
+    CREATE TABLE IF NOT EXISTS gbolix_api_keys (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL, key_prefix TEXT NOT NULL, key_hash TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_used_at TIMESTAMPTZ);
+    CREATE TABLE IF NOT EXISTS gbolix_agent_connections (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE, workspace_id TEXT NOT NULL, kind TEXT NOT NULL, provider TEXT NOT NULL, name TEXT NOT NULL, endpoint TEXT, method TEXT, auth_type TEXT, encrypted_secret TEXT, headers JSONB NOT NULL DEFAULT '{}'::jsonb, parameters JSONB NOT NULL DEFAULT '{}'::jsonb, status TEXT NOT NULL DEFAULT 'connected', permissions JSONB NOT NULL DEFAULT '[]'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE INDEX IF NOT EXISTS gbolix_agent_connections_agent_idx ON gbolix_agent_connections(agent_id, workspace_id, updated_at DESC);
-    CREATE TABLE IF NOT EXISTS gbolix_usage_events (
-      request_id TEXT PRIMARY KEY,
-      workspace_id TEXT NOT NULL,
-      agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE,
-      conversation_id TEXT NOT NULL,
-      model TEXT NOT NULL,
-      input_tokens INTEGER NOT NULL DEFAULT 0,
-      output_tokens INTEGER NOT NULL DEFAULT 0,
-      tool_calls INTEGER NOT NULL DEFAULT 0,
-      credits INTEGER NOT NULL DEFAULT 0,
-      status TEXT NOT NULL,
-      channel TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
+    CREATE TABLE IF NOT EXISTS gbolix_usage_events (request_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, agent_id TEXT NOT NULL REFERENCES gbolix_agents(id) ON DELETE CASCADE, conversation_id TEXT NOT NULL, model TEXT NOT NULL, input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0, tool_calls INTEGER NOT NULL DEFAULT 0, credits INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, channel TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE INDEX IF NOT EXISTS gbolix_usage_workspace_idx ON gbolix_usage_events(workspace_id, created_at DESC);
-    CREATE TABLE IF NOT EXISTS gbolix_audit_logs (
-      id TEXT PRIMARY KEY,
-      actor_id TEXT NOT NULL,
-      workspace_id TEXT NOT NULL,
-      action TEXT NOT NULL,
-      target_type TEXT NOT NULL,
-      target_id TEXT NOT NULL,
-      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
+    CREATE TABLE IF NOT EXISTS gbolix_audit_logs (id TEXT PRIMARY KEY, actor_id TEXT NOT NULL, workspace_id TEXT NOT NULL, action TEXT NOT NULL, target_type TEXT NOT NULL, target_id TEXT NOT NULL, metadata JSONB NOT NULL DEFAULT '{}'::jsonb, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW());
     CREATE INDEX IF NOT EXISTS gbolix_audit_workspace_idx ON gbolix_audit_logs(workspace_id, created_at DESC);
   `);
 }
 
 class MemoryStore implements Store {
-  private agents = new Map<string, Agent>();
-  private knowledge = new Map<string, KnowledgeSource>();
-  private conversations = new Map<string, Conversation>();
-  private messages = new Map<string, Message>();
-  private deployments = new Map<string, Deployment & { tokenHash: string }>();
-  private apiKeys = new Map<string, ApiKeyRecord>();
-  private connections = new Map<string, AgentConnection & { encryptedSecret?: string; headers?: Record<string, string>; parameters?: Record<string, string> }>();
-  private usage = new Map<string, UsageEvent>();
-  private audits = new Map<string, AuditEvent>();
-  private agentVersions = new Map<string, AgentVersion>();
-
+  private agents = new Map<string, Agent>(); private knowledge = new Map<string, KnowledgeSource>(); private conversations = new Map<string, Conversation>(); private messages = new Map<string, Message>(); private deployments = new Map<string, Deployment & { tokenHash: string }>(); private apiKeys = new Map<string, ApiKeyRecord>(); private connections = new Map<string, AgentConnection & { encryptedSecret?: string; headers?: Record<string, string>; parameters?: Record<string, string> }>(); private usage = new Map<string, UsageEvent>(); private audits = new Map<string, AuditEvent>(); private agentVersions = new Map<string, AgentVersion>();
   async listAgents(workspaceId: string) { return [...this.agents.values()].filter((item) => item.workspaceId === workspaceId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); }
   async createAgentVersion(input: Omit<AgentVersion, "id" | "createdAt">) { const item = { ...input, id: id("ver"), createdAt: now() }; this.agentVersions.set(item.id, item); return item; }
   async listAgentVersions(agentId: string, workspaceId: string) { return [...this.agentVersions.values()].filter((item) => item.agentId === agentId && item.workspaceId === workspaceId).sort((a, b) => b.version - a.version); }
   async restoreAgentVersion(versionId: string, agentId: string, workspaceId: string) { const version = this.agentVersions.get(versionId); if (!version || version.agentId !== agentId || version.workspaceId !== workspaceId) return undefined; return this.updateAgent(agentId, workspaceId, version.config); }
   async getAgent(agentId: string) { return this.agents.get(agentId); }
   async createAgent(input: Omit<Agent, "id" | "createdAt" | "updatedAt">) { const item = { ...input, id: id("agent"), createdAt: now(), updatedAt: now() }; this.agents.set(item.id, item); return item; }
-  async updateAgent(agentId: string, workspaceId: string, patch: Partial<Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "level" | "status" | "welcomeMessage" | "enabledTools">>) { const current = this.agents.get(agentId); if (!current || current.workspaceId !== workspaceId) return undefined; const item = { ...current, ...patch, updatedAt: now() }; this.agents.set(agentId, item); return item; }
+  async updateAgent(agentId: string, workspaceId: string, patch: Partial<Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "level" | "status" | "welcomeMessage" | "enabledTools">>) { const current = this.agents.get(agentId); if (!current || current.workspaceId !== workspaceId) return undefined; const item = { ...current, ...patch, status: current.status ?? "draft", updatedAt: now() }; this.agents.set(agentId, item); return item; }
   async listKnowledge(agentId: string, workspaceId: string) { return [...this.knowledge.values()].filter((item) => item.agentId === agentId && item.status === "ready" && this.agents.get(agentId)?.workspaceId === workspaceId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)); }
   async addKnowledge(input: Omit<KnowledgeSource, "id" | "createdAt" | "updatedAt">) { const item = { ...input, id: id("know"), createdAt: now(), updatedAt: now() }; this.knowledge.set(item.id, item); return item; }
   async deleteKnowledge(knowledgeId: string, agentId: string, workspaceId: string) { const item = this.knowledge.get(knowledgeId); if (!item || item.agentId !== agentId || this.agents.get(agentId)?.workspaceId !== workspaceId) return false; this.knowledge.delete(knowledgeId); return true; }
@@ -223,12 +91,12 @@ class MemoryStore implements Store {
 class PostgresStore implements Store {
   constructor(private readonly pool: Pool) {}
   async listAgents(workspaceId: string) { const result = await this.pool.query("SELECT * FROM gbolix_agents WHERE workspace_id = $1 ORDER BY updated_at DESC", [workspaceId]); return result.rows.map((row) => agentRow(row)); }
-  async createAgentVersion(input: Omit<AgentVersion, "id" | "createdAt">) { const result = await this.pool.query("INSERT INTO gbolix_agent_versions (id,agent_id,workspace_id,version,config,created_by) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *", [id("ver"), input.agentId, input.workspaceId, input.version, JSON.stringify(input.config), input.createdBy]); return agentVersionRow(result.rows[0]); }
+  async createAgentVersion(input: Omit<AgentVersion, "id" | "createdAt">) { const result = await this.pool.query("INSERT INTO gbolix_agent_versions (id,agent_id,workspace_id,version,config,created_by) VALUES ($1,$2,$3,$4,$5,$6)", [id("ver"), input.agentId, input.workspaceId, input.version, JSON.stringify(input.config), input.createdBy]); return agentVersionRow({ id: id("ver"), agent_id: input.agentId, workspace_id: input.workspaceId, version: input.version, config: input.config, created_by: input.createdBy, created_at: now() }); }
   async listAgentVersions(agentId: string, workspaceId: string) { const result = await this.pool.query("SELECT * FROM gbolix_agent_versions WHERE agent_id=$1 AND workspace_id=$2 ORDER BY version DESC", [agentId, workspaceId]); return result.rows.map(agentVersionRow); }
   async restoreAgentVersion(versionId: string, agentId: string, workspaceId: string) { const result = await this.pool.query("SELECT config FROM gbolix_agent_versions WHERE id=$1 AND agent_id=$2 AND workspace_id=$3 LIMIT 1", [versionId, agentId, workspaceId]); const version = result.rows[0]; if (!version) return undefined; return this.updateAgent(agentId, workspaceId, version.config as AgentVersion["config"]); }
   async getAgent(agentId: string) { const result = await this.pool.query("SELECT * FROM gbolix_agents WHERE id = $1 LIMIT 1", [agentId]); return result.rows[0] ? agentRow(result.rows[0]) : undefined; }
   async createAgent(input: Omit<Agent, "id" | "createdAt" | "updatedAt">) { const result = await this.pool.query("INSERT INTO gbolix_agents (id, workspace_id, name, description, instructions, tone, model, level, status, welcome_message, enabled_tools) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *", [id("agent"), input.workspaceId, input.name, input.description, input.instructions, input.tone, input.model, input.level, input.status, input.welcomeMessage, JSON.stringify(input.enabledTools)]); return agentRow(result.rows[0]); }
-  async updateAgent(agentId: string, workspaceId: string, patch: Partial<Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "level" | "status" | "welcomeMessage" | "enabledTools">>) { const current = await this.getAgent(agentId); if (!current || current.workspaceId !== workspaceId) return undefined; const next = { ...current, ...patch }; const result = await this.pool.query("UPDATE gbolix_agents SET name=$1, description=$2, instructions=$3, tone=$4, model=$5, level=$6, status=$7, welcome_message=$8, enabled_tools=$9, updated_at=NOW() WHERE id=$10 AND workspace_id=$11 RETURNING *", [next.name, next.description, next.instructions, next.tone, next.model, next.level, next.status, next.welcomeMessage, JSON.stringify(next.enabledTools), agentId, workspaceId]); return result.rows[0] ? agentRow(result.rows[0]) : undefined; }
+  async updateAgent(agentId: string, workspaceId: string, patch: Partial<Pick<Agent, "name" | "description" | "instructions" | "tone" | "model" | "level" | "status" | "welcomeMessage" | "enabledTools">>) { const current = await this.getAgent(agentId); if (!current || current.workspaceId !== workspaceId) return undefined; const next = { ...current, ...patch, status: current.status ?? "draft" }; const result = await this.pool.query("UPDATE gbolix_agents SET name=$1, description=$2, instructions=$3, tone=$4, model=$5, level=$6, status=$7, welcome_message=$8, enabled_tools=$9, updated_at=NOW() WHERE id=$10 AND workspace_id=$11 RETURNING *", [next.name, next.description, next.instructions, next.tone, next.model, next.level, next.status, next.welcomeMessage, JSON.stringify(next.enabledTools), agentId, workspaceId]); return result.rows[0] ? agentRow(result.rows[0]) : undefined; }
   async listKnowledge(agentId: string, workspaceId: string) { const result = await this.pool.query("SELECT * FROM gbolix_knowledge WHERE agent_id=$1 AND workspace_id=$2 AND status='ready' ORDER BY updated_at DESC", [agentId, workspaceId]); return result.rows.map(knowledgeRow); }
   async addKnowledge(input: Omit<KnowledgeSource, "id" | "createdAt" | "updatedAt">) { const result = await this.pool.query("INSERT INTO gbolix_knowledge (id,agent_id,workspace_id,title,content,source_type,status) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *", [id("know"), input.agentId, input.workspaceId, input.title, input.content, input.sourceType, input.status]); return knowledgeRow(result.rows[0]); }
   async deleteKnowledge(knowledgeId: string, agentId: string, workspaceId: string) { const result = await this.pool.query("DELETE FROM gbolix_knowledge WHERE id=$1 AND agent_id=$2 AND workspace_id=$3", [knowledgeId, agentId, workspaceId]); return result.rowCount === 1; }
@@ -261,7 +129,6 @@ class PostgresStore implements Store {
   async adminConversation(conversationId: string) { const result = await this.pool.query("SELECT c.*, a.name AS agent_name, COUNT(m.id)::int AS message_count, (SELECT m2.content FROM gbolix_messages m2 WHERE m2.conversation_id=c.id ORDER BY m2.created_at DESC LIMIT 1) AS last_message FROM gbolix_conversations c JOIN gbolix_agents a ON a.id=c.agent_id LEFT JOIN gbolix_messages m ON m.conversation_id=c.id WHERE c.id=$1 GROUP BY c.id, a.name LIMIT 1", [conversationId]); if (!result.rows[0]) return undefined; const messages = await this.pool.query("SELECT * FROM gbolix_messages WHERE conversation_id=$1 ORDER BY created_at ASC", [conversationId]); return { conversation: { ...conversationRow(result.rows[0]), agentName: result.rows[0].agent_name, messageCount: result.rows[0].message_count, lastMessage: result.rows[0].last_message ?? undefined }, messages: messages.rows.map(messageRow) }; }
   async adminUsage(limit: number) { const result = await this.pool.query("SELECT u.*, a.name AS agent_name FROM gbolix_usage_events u JOIN gbolix_agents a ON a.id=u.agent_id ORDER BY u.created_at DESC LIMIT $1", [limit]); return result.rows.map((row) => ({ ...usageRow(row), agentName: row.agent_name })); }
   async adminDeployments(limit: number) { const result = await this.pool.query("SELECT d.*, a.name AS agent_name FROM gbolix_deployments d JOIN gbolix_agents a ON a.id=d.agent_id ORDER BY d.created_at DESC LIMIT $1", [limit]); return result.rows.map((row) => ({ ...deploymentRow(row), agentName: row.agent_name })); }
-  async adminRevokeDeployment(deploymentId: string) { const result = await this.pool.query("UPDATE gbolix_deployments SET status='revoked', updated_at=NOW() WHERE id=$1", [deploymentId]); return result.rowCount === 1; }
   async adminKnowledge(limit: number) { const result = await this.pool.query("SELECT k.*, a.name AS agent_name FROM gbolix_knowledge k JOIN gbolix_agents a ON a.id=k.agent_id ORDER BY k.updated_at DESC LIMIT $1", [limit]); return result.rows.map((row) => ({ ...knowledgeRow(row), agentName: row.agent_name })); }
   async adminTools() { const result = await this.pool.query("SELECT a.enabled_tools FROM gbolix_agents a"); const adoption = new Map<string, number>(); for (const row of result.rows) { const tools = Array.isArray(row.enabled_tools) ? row.enabled_tools : []; for (const tool of tools) adoption.set(tool, (adoption.get(tool) ?? 0) + 1); } const calls = await this.pool.query("SELECT COALESCE(SUM(tool_calls),0)::int AS total_calls FROM gbolix_usage_events"); return Object.entries(BUILTIN_TOOLS).map(([name, definition]) => ({ name, description: definition.function.description, agents: adoption.get(name) ?? 0, calls: calls.rows[0]?.total_calls ?? 0 })); }
   async adminActivity(limit: number) { const result = await this.pool.query("SELECT id, type, workspace_id, agent_id, agent_name, description, status, created_at FROM (SELECT u.request_id AS id, 'usage' AS type, u.workspace_id, u.agent_id, a.name AS agent_name, CASE WHEN u.status='completed' THEN 'AI response completed' ELSE 'Usage event ' || u.status END AS description, u.status, u.created_at FROM gbolix_usage_events u JOIN gbolix_agents a ON a.id=u.agent_id UNION ALL SELECT c.id, 'conversation' AS type, c.workspace_id, c.agent_id, a.name AS agent_name, 'Conversation ' || c.status AS description, c.status, c.updated_at AS created_at FROM gbolix_conversations c JOIN gbolix_agents a ON a.id=c.agent_id UNION ALL SELECT d.id, 'deployment' AS type, d.workspace_id, d.agent_id, a.name AS agent_name, 'Website deployment ' || d.status AS description, d.status, d.updated_at AS created_at FROM gbolix_deployments d JOIN gbolix_agents a ON a.id=d.agent_id UNION ALL SELECT l.id, 'audit' AS type, l.workspace_id, CASE WHEN l.target_type='agent' THEN l.target_id ELSE NULL END AS agent_id, NULL::text AS agent_name, l.action || ' ' || l.target_type AS description, 'recorded' AS status, l.created_at FROM gbolix_audit_logs l) activity ORDER BY created_at DESC LIMIT $1", [limit]); return result.rows.map((row) => ({ id: row.id, type: row.type, workspaceId: row.workspace_id, agentId: row.agent_id, agentName: row.agent_name, description: row.description, status: row.status, createdAt: new Date(row.created_at).toISOString() })); }
@@ -269,7 +136,7 @@ class PostgresStore implements Store {
 
 function hash(value: string) { return crypto.createHash("sha256").update(value).digest("hex"); }
 function agentVersionRow(row: any): AgentVersion { return { id: row.id, agentId: row.agent_id, workspaceId: row.workspace_id, version: row.version, config: row.config, createdBy: row.created_by, createdAt: new Date(row.created_at).toISOString() }; }
-function agentRow(row: any, prefix = "") : Agent { return { id: row[`${prefix}id`] ?? row.id, workspaceId: row[`${prefix}workspace_id`] ?? row.workspace_id, name: row[`${prefix}name`] ?? row.name, description: row[`${prefix}description`] ?? row.description, instructions: row[`${prefix}instructions`] ?? row.instructions, tone: row[`${prefix}tone`] ?? row.tone, model: row[`${prefix}model`] ?? row.model, level: (row[`${prefix}level`] ?? row.level ?? 1) as Agent["level"], status: row[`${prefix}status`] ?? row.status, welcomeMessage: row[`${prefix}welcome_message`] ?? row.welcome_message, enabledTools: row[`${prefix}enabled_tools`] ?? row.enabled_tools ?? [], createdAt: new Date(row[`${prefix}created_at`] ?? row.created_at).toISOString(), updatedAt: new Date(row[`${prefix}updated_at`] ?? row.updated_at).toISOString() }; }
+function agentRow(row: any, prefix = ""): Agent { return { id: row[`${prefix}id`] ?? row.id, workspaceId: row[`${prefix}workspace_id`] ?? row.workspace_id, name: row[`${prefix}name`] ?? row.name, description: row[`${prefix}description`] ?? row.description, instructions: row[`${prefix}instructions`] ?? row.instructions, tone: row[`${prefix}tone`] ?? row.tone, model: row[`${prefix}model`] ?? row.model, level: (row[`${prefix}level`] ?? row.level ?? 1) as Agent["level"], status: row[`${prefix}status`] ?? row.status ?? "draft", welcomeMessage: row[`${prefix}welcome_message`] ?? row.welcome_message, enabledTools: row[`${prefix}enabled_tools`] ?? row.enabled_tools ?? [], createdAt: new Date(row[`${prefix}created_at`] ?? row.created_at).toISOString(), updatedAt: new Date(row[`${prefix}updated_at`] ?? row.updated_at).toISOString() }; }
 function knowledgeRow(row: any): KnowledgeSource { return { id: row.id, agentId: row.agent_id, workspaceId: row.workspace_id, title: row.title, content: row.content, sourceType: row.source_type, status: row.status, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() }; }
 function conversationRow(row: any): Conversation { return { id: row.id, agentId: row.agent_id, workspaceId: row.workspace_id, channel: row.channel, visitorKey: row.visitor_key, status: row.status, createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString() }; }
 function messageRow(row: any): Message { return { id: row.id, conversationId: row.conversation_id, role: row.role, content: row.content, toolName: row.tool_name ?? undefined, createdAt: new Date(row.created_at).toISOString() }; }
