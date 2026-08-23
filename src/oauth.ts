@@ -120,7 +120,9 @@ export async function completeOAuth(store: Store, code: string, stateValue: stri
 
 export function callbackPage(ok: boolean, message: string) {
   const safe = message.replace(/[&<>\"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[char] ?? char));
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Gbolix connection</title></head><body style="font-family:system-ui;padding:40px;text-align:center"><h2>${ok ? "Connection successful" : "Connection failed"}</h2><p>${safe}</p><script>if(window.opener){window.opener.postMessage({type:'gbolix-oauth-result',ok:${ok ? "true" : "false"},message:${JSON.stringify(message)}},'*');window.setTimeout(()=>window.close(),900);}</script></body></html>`;
+  const frontend = `${config.frontendUrl.replace(/\/$/, "")}/dashboard/products/gbolix-ai-agent`;
+  const target = `${frontend}?connection=${ok ? "success" : "error"}`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="1;url=${target}"><title>Gbolix connection</title></head><body style="font-family:system-ui;padding:40px;text-align:center"><h2>${ok ? "Connection successful" : "Connection failed"}</h2><p>${safe}</p><p>Returning to Gbolix…</p><script>if(window.opener){window.opener.postMessage({type:'gbolix-oauth-result',ok:${ok ? "true" : "false"},message:${JSON.stringify(message)}},'*');window.setTimeout(()=>window.close(),900);}else{window.setTimeout(()=>window.location.replace(${JSON.stringify(target)}),900);}</script></body></html>`;
 }
 
 export function providerLabel(provider: OAuthProvider) { return provider === "hubspot" ? "HubSpot CRM" : provider === "google_gmail" ? "Google Gmail" : "Google Calendar"; }
