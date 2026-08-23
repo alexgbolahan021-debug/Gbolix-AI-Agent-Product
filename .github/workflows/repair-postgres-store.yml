@@ -1,0 +1,45 @@
+name: Repair PostgresStore
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repair PostgresStore implementation
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("src/store.ts")
+          text = path.read_text()
+          method = '''  async adminRevokeDeployment(deploymentId: string) { const result = await this.pool.query("UPDATE gbolix_deployments SET status='revoked',updated_at=NOW() WHERE id=$1", [deploymentId]); return result.rowCount === 1; }\n'''
+          if "async adminRevokeDeployment(deploymentId: string)" not in text:
+              marker = '  async revokeDeployment(deploymentId: string, agentId: string, workspaceId: string) { const result = await this.pool.query("UPDATE gbolix_deployments SET status=\'revoked\',updated_at=NOW() WHERE id=$1 AND agent_id=$2 AND workspace_id=$3", [deploymentId, agentId, workspaceId]); return result.rowCount === 1; }\n'
+              if marker not in text:
+                  raise SystemExit("Could not find the existing revokeDeployment method; refusing to modify the file.")
+              text = text.replace(marker, marker + method, 1)
+              path.write_text(text)
+
+      - name: Verify TypeScript build
+        run: npm install && npm run build
+
+      - name: Commit repair and remove temporary workflow
+        shell: bash
+        run: |
+          if git diff --quiet -- src/store.ts; then
+            echo "No repair needed."
+            exit 0
+          fi
+          rm -f .github/workflows/repair-postgres-store.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/store.ts .github/workflows/repair-postgres-store.yml
+          git commit -m "fix: implement admin deployment revoke in PostgresStore"
+          git push
