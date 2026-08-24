@@ -1,0 +1,46 @@
+name: Add test email route
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: ${{ !contains(github.event.head_commit.message, 'Add Gmail test email route') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch server route
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('src/server.ts')
+          s = p.read_text()
+          if '/test-email' in s:
+              raise SystemExit(0)
+          import_line = 'import { sendGmailTestEmail } from "./testEmail.js";\n'
+          anchor = 'import type { Agent, AgentConnection, ConversationStatus, Identity } from "./types.js";\n'
+          if import_line not in s:
+              s = s.replace(anchor, anchor + import_line)
+          route = '''\napp.post("/v1/agents/:agentId/test-email", withIdentity(async (request, response, identity) => {\n  const agent = await store.getAgent(String(request.params.agentId));\n  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });\n  if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required to send test emails.", code: "LEVEL_REQUIRED", level: 3 });\n  const body = request.body as Record<string, unknown>;\n  const to = typeof body.to === "string" ? body.to.trim() : "";\n  const subject = typeof body.subject === "string" ? body.subject.trim() : "";\n  const message = typeof body.message === "string" ? body.message.trim() : "";\n  if (!to || !subject || !message) return response.status(400).json({ error: "to, subject, and message are required" });\n  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(to)) return response.status(400).json({ error: "A valid recipient email address is required" });\n  const connections = await store.listConnections(agent.id, identity.workspaceId);\n  const gmail = connections.find((item) => item.provider === "google_gmail" && item.status === "connected");\n  if (!gmail) return response.status(409).json({ error: "Connect Google Gmail in Tools & Connections before sending a test email.", code: "GMAIL_NOT_CONNECTED" });\n  const connection = await store.getConnection(gmail.id, agent.id, identity.workspaceId);\n  if (!connection) return response.status(409).json({ error: "The Gmail connection could not be loaded. Please reconnect Gmail.", code: "GMAIL_CONNECTION_UNAVAILABLE" });\n  const sent = await sendGmailTestEmail(connection, { to, subject, message });\n  await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "agent.test_email", targetType: "agent", targetId: agent.id, metadata: { recipient: to, subject, provider: "google_gmail", messageId: sent.id } });\n  return response.json({ success: true, messageId: sent.id, threadId: sent.threadId, from: sent.from });\n}));\n'''
+          marker = 'app.get("/v1/agents/:agentId/conversations",'
+          if marker not in s:
+              raise SystemExit('Could not find insertion point')
+          s = s.replace(marker, route + marker, 1)
+          p.write_text(s)
+          PY
+
+      - name: Commit patched route
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/server.ts .github/workflows/patch-test-email.yml
+          git diff --cached --quiet && exit 0
+          git commit -m "Add Gmail test email route"
+          git push
