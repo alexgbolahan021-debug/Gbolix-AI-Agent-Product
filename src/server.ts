@@ -15,6 +15,7 @@ import { callbackPage, completeOAuth, createAuthorizationUrl, oauthConfigured, t
 import type { Agent, AgentConnection, ConversationStatus, Identity } from "./types.js";
 import { encryptGmailCredentials, GmailTestEmailError, sendGmailTestEmail } from "./testEmail.js";
 import { approveReply, createCampaign, pollAgentReplies, pollAllConfiguredAgents, publicEmailError, runCampaign } from "./emailAutomation.js";
+import { loadAiProviderCatalog } from "./aiCatalog.js";
 
 const store = await createStore();
 const credits = new CreditService();
@@ -170,6 +171,27 @@ app.get("/v1/agents/:agentId/connections", withIdentity(async (request, response
 app.post("/v1/agents/:agentId/connections", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required to connect tools and external systems.", code: "LEVEL_REQUIRED", level: 3 }); const body = request.body as Record<string, unknown>; const kind = body.kind === "custom_api" ? "custom_api" : body.kind === "native" ? "native" : undefined; const provider = typeof body.provider === "string" ? body.provider.trim().slice(0, 80) : ""; const name = typeof body.name === "string" ? body.name.trim().slice(0, 120) : ""; if (!kind || !provider || !name) return response.status(400).json({ error: "kind, provider, and name are required" }); if (kind === "native") return response.status(501).json({ error: "Native OAuth connections are not enabled yet. Configure a Custom API connection or add the provider OAuth credentials first.", code: "OAUTH_PROVIDER_NOT_CONFIGURED" }); const rawEndpoint = typeof body.endpoint === "string" ? body.endpoint.trim() : ""; const endpoint = await safeKnowledgeUrl(rawEndpoint); if (!endpoint) return response.status(400).json({ error: "endpoint must be a public http(s) URL" }); const method = ["GET", "POST", "PUT", "PATCH", "DELETE"].includes(String(body.method).toUpperCase()) ? String(body.method).toUpperCase() as AgentConnection["method"] : "GET"; const authType = body.authType === "api_key" || body.authType === "bearer" ? body.authType : "none"; const secret = typeof body.secret === "string" ? body.secret : ""; if (authType !== "none" && !secret) return response.status(400).json({ error: "A secret is required for API key or Bearer authentication" }); const headers = safeStringMap(body.headers); const parameters = safeStringMap(body.parameters); const encryptedSecret = secret ? sealSecret(secret) : undefined; const connection = await store.createConnection({ agentId: agent.id, workspaceId: identity.workspaceId, kind, provider, name, endpoint: endpoint.toString(), method, authType, encryptedSecret, headers, parameters, permissions: Array.isArray(body.permissions) ? body.permissions.filter((item): item is string => typeof item === "string").slice(0, 10) : [] }); await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "connection.create", targetType: "agent", targetId: agent.id, metadata: { kind, provider } }); return response.status(201).json(connection); }));
 app.delete("/v1/agents/:agentId/connections/:connectionId", withIdentity(async (request, response, identity) => { const removed = await store.deleteConnection(String(request.params.connectionId), String(request.params.agentId), identity.workspaceId); return removed ? response.status(204).send() : response.status(404).json({ error: "Connection not found" }); }));
 
+app.get("/v1/agents/:agentId/ai/providers", withIdentity(async (request, response, identity) => {
+  const agent = await store.getAgent(String(request.params.agentId));
+  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
+  const settings = await store.getAiProviderSettings(agent.id, identity.workspaceId) ?? { agentId: agent.id, workspaceId: agent.workspaceId, providerOrder: ["gemini", "openai"] as const, models: {}, fallbackEnabled: true, autoUpdateModels: true, updatedAt: new Date(0).toISOString() };
+  return response.json({ settings, catalogs: await loadAiProviderCatalog() });
+}));
+app.patch("/v1/agents/:agentId/ai/providers", withIdentity(async (request, response, identity) => {
+  const agent = await store.getAgent(String(request.params.agentId));
+  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
+  if (identity.authType !== "identity") return response.status(403).json({ error: "Only an authenticated workspace administrator can change AI provider settings.", code: "ADMIN_REQUIRED" });
+  const body = request.body as Record<string, unknown>;
+  const rawOrder = Array.isArray(body.providerOrder) ? body.providerOrder : [];
+  const providerOrder = [...new Set(rawOrder.filter((item): item is "gemini" | "openai" => item === "gemini" || item === "openai"))];
+  if (!providerOrder.length) return response.status(400).json({ error: "Select at least one AI provider." });
+  const rawModels = body.models && typeof body.models === "object" && !Array.isArray(body.models) ? body.models as Record<string, unknown> : {};
+  const models: Partial<Record<"gemini" | "openai", string>> = {};
+  for (const provider of ["gemini", "openai"] as const) if (typeof rawModels[provider] === "string" && rawModels[provider].trim()) models[provider] = rawModels[provider].trim().slice(0, 160);
+  const settings = await store.upsertAiProviderSettings({ agentId: agent.id, workspaceId: agent.workspaceId, providerOrder, models, fallbackEnabled: body.fallbackEnabled !== false, autoUpdateModels: body.autoUpdateModels !== false });
+  await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "ai.provider_settings.update", targetType: "agent", targetId: agent.id, metadata: { providerOrder, models, fallbackEnabled: settings.fallbackEnabled, autoUpdateModels: settings.autoUpdateModels } });
+  return response.json(settings);
+}));
 app.get("/v1/agents/:agentId/email/settings", withIdentity(async (request, response, identity) => {
   const agent = await store.getAgent(String(request.params.agentId));
   if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });

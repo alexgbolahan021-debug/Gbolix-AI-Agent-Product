@@ -1,4 +1,6 @@
 import { config } from "./config.js";
+import type { AiProviderSettings, AiProviderId } from "./types.js";
+import { loadProviderModels } from "./aiCatalog.js";
 
 export type ChatMessage = { role: "system" | "user" | "assistant" | "tool"; content: string; tool_call_id?: string; name?: string };
 export type ToolDefinition = { type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } };
@@ -22,8 +24,8 @@ function providerFailure(provider: SupportedProvider, detail: unknown): Error {
   return new Error(PUBLIC_AI_ERROR);
 }
 
-function providerOrder(): SupportedProvider[] {
-  const configured = config.aiProviderOrder.length ? config.aiProviderOrder : [config.aiProvider, config.aiProvider === "gemini" ? "openai" : "gemini"];
+function providerOrder(settings?: AiProviderSettings): SupportedProvider[] {
+  const configured = settings?.providerOrder?.length ? settings.providerOrder : config.aiProviderOrder.length ? config.aiProviderOrder : [config.aiProvider, config.aiProvider === "gemini" ? "openai" : "gemini"];
   return [...new Set(configured.map((item) => item.toLowerCase()).filter((item): item is SupportedProvider => item === "gemini" || item === "openai"))];
 }
 
@@ -31,27 +33,36 @@ function hasCredentials(provider: SupportedProvider): boolean {
   return provider === "gemini" ? Boolean(config.geminiApiKey) : Boolean(config.openAiApiKey);
 }
 
-function modelFor(provider: SupportedProvider, requested: string): string {
-  if (provider === "gemini") return requested.startsWith("gemini-") ? requested : config.geminiModel;
-  return requested.startsWith("gemini-") ? config.openAiModel : requested || config.openAiModel;
+const liveModelCache = new Map<AiProviderId, { checkedAt: number; models: string[] }>();
+async function liveModels(provider: SupportedProvider): Promise<string[] | undefined> { const cached = liveModelCache.get(provider); if (cached && Date.now() - cached.checkedAt < 5 * 60 * 1000) return cached.models; try { const models = await loadProviderModels(provider); const ids = models.filter((item) => item.live && !item.deprecated).map((item) => item.id); liveModelCache.set(provider, { checkedAt: Date.now(), models: ids }); return ids; } catch (error) { console.error("[Gbolix ai-provider] live_model_check_failed", JSON.stringify({ provider, error: error instanceof Error ? error.message : String(error) })); return undefined; } }
+async function modelCandidates(provider: SupportedProvider, requested: string, settings?: AiProviderSettings): Promise<string[]> {
+  const selected = settings?.models?.[provider];
+  const fallback = provider === "gemini" ? (requested.startsWith("gemini-") ? requested : config.geminiModel) : (requested.startsWith("gemini-") ? config.openAiModel : requested || config.openAiModel);
+  if (settings?.autoUpdateModels !== false) { const live = await liveModels(provider); if (live?.length) return [...new Set([selected, fallback, ...live].filter((item): item is string => Boolean(item)).filter((item) => live.includes(item)))]; }
+  return [selected || fallback];
 }
 
-export async function complete(input: { model: string; messages: ChatMessage[]; tools?: ToolDefinition[] }): Promise<Completion> {
-  const providers = providerOrder().filter(hasCredentials);
+export async function complete(input: { model: string; messages: ChatMessage[]; tools?: ToolDefinition[]; settings?: AiProviderSettings }): Promise<Completion> {
+  const providers = providerOrder(input.settings).filter(hasCredentials);
   if (!providers.length) return fallbackCompletion(input.messages);
 
   let lastError: unknown;
   for (let index = 0; index < providers.length; index += 1) {
     const provider = providers[index];
-    try {
-      const completion = provider === "gemini" ? await completeWithGemini(input, modelFor(provider, input.model)) : await completeWithOpenAI(input, modelFor(provider, input.model));
-      if (index > 0) console.info("[Gbolix ai-provider] fallback_succeeded", JSON.stringify({ provider, attemptedProviders: providers.slice(0, index + 1) }));
-      return completion;
-    } catch (error) {
-      lastError = error;
-      console.error("[Gbolix ai-provider] fallback_attempt_failed", JSON.stringify({ provider, attempt: index + 1, hasNextProvider: index < providers.length - 1, error: error instanceof Error ? error.message : String(error) }));
-      if (!config.aiFallbackEnabled) break;
+    const candidates = await modelCandidates(provider, input.model, input.settings);
+    for (let modelIndex = 0; modelIndex < candidates.length; modelIndex += 1) {
+      const selectedModel = candidates[modelIndex];
+      try {
+        const completion = provider === "gemini" ? await completeWithGemini(input, selectedModel) : await completeWithOpenAI(input, selectedModel);
+        if (index > 0 || modelIndex > 0) console.info("[Gbolix ai-provider] fallback_succeeded", JSON.stringify({ provider, model: selectedModel, attemptedProviders: providers.slice(0, index + 1), attemptedModelCount: modelIndex + 1 }));
+        return completion;
+      } catch (error) {
+        lastError = error;
+        console.error("[Gbolix ai-provider] fallback_attempt_failed", JSON.stringify({ provider, model: selectedModel, providerAttempt: index + 1, modelAttempt: modelIndex + 1, hasNextModel: modelIndex < candidates.length - 1, hasNextProvider: index < providers.length - 1, error: error instanceof Error ? error.message : String(error) }));
+        if (!(input.settings?.fallbackEnabled ?? config.aiFallbackEnabled)) break;
+      }
     }
+    if (!(input.settings?.fallbackEnabled ?? config.aiFallbackEnabled)) break;
   }
 
   if (!lastError) return fallbackCompletion(input.messages);

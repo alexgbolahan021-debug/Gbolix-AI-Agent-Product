@@ -17,15 +17,18 @@ test("falls back from a quota-limited primary provider to the next configured pr
   const originalFetch = globalThis.fetch;
   const calls: string[] = [];
   globalThis.fetch = (async (input) => {
-    calls.push(String(input));
-    return calls.length === 1 ? new Response(JSON.stringify({ error: { message: "quota exceeded for gemini-3.6-flash" } }), { status: 429, headers: { "content-type": "application/json" } }) : openAiSuccess();
+    const url = String(input);
+    calls.push(url);
+    if (url.includes("generativelanguage.googleapis.com") && url.includes("/models?")) return new Response(JSON.stringify({ models: [{ name: "models/gemini-3.6-flash", displayName: "Gemini Flash", supportedGenerationMethods: ["generateContent"] }] }), { status: 200, headers: { "content-type": "application/json" } });
+    if (url.includes("generativelanguage.googleapis.com")) return new Response(JSON.stringify({ error: { message: "quota exceeded for gemini-3.6-flash" } }), { status: 429, headers: { "content-type": "application/json" } });
+    if (url.endsWith("/models")) return new Response(JSON.stringify({ data: [{ id: "gpt-5-mini", owned_by: "openai" }] }), { status: 200, headers: { "content-type": "application/json" } });
+    return openAiSuccess();
   }) as typeof fetch;
   try {
     const result = await complete({ model: "gemini-3.6-flash", messages: [{ role: "user", content: "Write a reply" }] });
     assert.equal(result.content, "Fallback response");
-    assert.equal(calls.length, 2);
-    assert.equal(calls[0].includes("generativelanguage.googleapis.com"), true);
-    assert.equal(calls[1].includes("/chat/completions"), true);
+    assert.equal(calls.some((url) => url.includes("generativelanguage.googleapis.com")), true);
+    assert.equal(calls.some((url) => url.includes("/chat/completions")), true);
   } finally {
     globalThis.fetch = originalFetch;
   }

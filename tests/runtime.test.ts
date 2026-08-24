@@ -13,6 +13,7 @@ function makeFixture(level: 1 | 2 | 3, withConnection = false) {
     async listKnowledge() { return []; },
     async listConnections() { return withConnection ? [connection] : []; },
     async getConnection() { return withConnection ? connection : undefined; },
+    async getAiProviderSettings() { return undefined; },
     async getConversation() { return undefined; },
     async createConversation(input: any) { return { ...input, id: `conversation_${level}`, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; },
     async listMessages() { return messages.slice(); },
