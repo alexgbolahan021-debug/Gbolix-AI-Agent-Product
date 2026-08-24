@@ -19,7 +19,7 @@ const HUBSPOT_SCOPES = ["crm.objects.contacts.read", "crm.objects.contacts.write
 export const GOOGLE_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
 export const GOOGLE_GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 const GOOGLE_GMAIL_SCOPES = [GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_READ_SCOPE];
-const GOOGLE_CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events"];
+const GOOGLE_CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events", "https://www.googleapis.com/auth/calendar.readonly"];
 
 function oauthLog(stage: string, fields: Record<string, unknown> = {}) {
   console.info("[Gbolix oauth]", JSON.stringify({ stage, ...fields }));
