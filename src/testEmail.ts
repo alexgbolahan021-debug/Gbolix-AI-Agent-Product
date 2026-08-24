@@ -45,7 +45,12 @@ export async function sendGmailTestEmail(connection: AgentConnection & { encrypt
   });
   const data = await response.json().catch(() => ({})) as Record<string, unknown>;
   if (!response.ok) {
-    const detail = typeof data.error_description === "string" ? data.error_description : typeof (data.error as Record<string, unknown> | undefined)?.message === "string" ? (data.error as Record<string, unknown>).message : `Gmail returned ${response.status}.`;
+    const errorValue = data.error;
+    const detail = typeof data.error_description === "string"
+      ? data.error_description
+      : errorValue && typeof errorValue === "object" && typeof (errorValue as Record<string, unknown>).message === "string"
+        ? (errorValue as Record<string, unknown>).message as string
+        : `Gmail returned ${response.status}.`;
     throw new Error(detail);
   }
   return { id: typeof data.id === "string" ? data.id : undefined, threadId: typeof data.threadId === "string" ? data.threadId : undefined, from };
