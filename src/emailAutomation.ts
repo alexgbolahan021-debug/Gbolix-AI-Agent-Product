@@ -184,7 +184,7 @@ async function generateReply(agent: Agent, event: EmailReplyEvent) {
   const result = await complete({ model: agent.model || config.defaultModel, messages: [{ role: "system", content: `You are ${agent.name}. ${agent.instructions}\n\nWrite a concise, accurate email reply. Never invent facts. If the email needs a human decision, say that clearly. Return only the email body, without a subject or greeting metadata.` }, { role: "user", content: `Incoming email from ${event.fromEmail ?? "unknown sender"}\nSubject: ${event.subject ?? "(no subject)"}\n\n${event.body}` }], tools: [] });
   const body = result.content.trim().slice(0, MAX_BODY);
   if (!body) throw new Error("The agent generated an empty reply.");
-  return { body, inputTokens: result.inputTokens, outputTokens: result.outputTokens };
+  return { body, inputTokens: result.inputTokens, outputTokens: result.outputTokens, provider: result.provider, model: result.model };
 }
 
 export async function pollAgentReplies(store: Store, credits: CreditService, agent: Agent): Promise<number> {
@@ -215,11 +215,11 @@ export async function pollAgentReplies(store: Store, credits: CreditService, age
     try {
       const generated = await generateReply(agent, event);
       if (settings.replyMode === "draft") {
-        await credits.finalize(authorization, { requestId: aiRequestId, workspaceId: agent.workspaceId, agentId: agent.id, conversationId: `reply_${event.id}`, credits: 1, model: agent.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens, toolCalls: 0 });
+        await credits.finalize(authorization, { requestId: aiRequestId, workspaceId: agent.workspaceId, agentId: agent.id, conversationId: `reply_${event.id}`, credits: 1, model: generated.model || agent.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens, toolCalls: 0 });
         await store.updateEmailReplyEvent(event.id, agent.id, { status: "pending", replyBody: generated.body });
       } else {
         const sent = await sendGmailTestEmail(connection, { to: header.from?.match(/<([^>]+)>/)?.[1] ?? header.from ?? "", subject: `Re: ${(header.subject ?? "").replace(/^Re:\s*/i, "")}`, message: generated.body, threadId: candidate.threadId, inReplyTo: header["message-id"], references: [header.references, header["message-id"]].filter(Boolean).join(" ") }, tokenContext(agent, connection, store, aiRequestId));
-        await credits.finalize(authorization, { requestId: aiRequestId, workspaceId: agent.workspaceId, agentId: agent.id, conversationId: `reply_${event.id}`, credits: 1, model: agent.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens, toolCalls: 1 });
+        await credits.finalize(authorization, { requestId: aiRequestId, workspaceId: agent.workspaceId, agentId: agent.id, conversationId: `reply_${event.id}`, credits: 1, model: generated.model || agent.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens, toolCalls: 1 });
         await store.updateEmailReplyEvent(event.id, agent.id, { status: "sent", replyBody: generated.body, replyMessageId: sent.id });
       }
       processed += 1;

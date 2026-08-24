@@ -11,6 +11,10 @@ services:
         value: production
       - key: AI_PROVIDER
         value: gemini
+      - key: AI_PROVIDER_ORDER
+        value: gemini,openai
+      - key: AI_FALLBACK_ENABLED
+        value: "true"
       - key: GEMINI_API_KEY
         sync: false
       - key: GEMINI_BASE_URL

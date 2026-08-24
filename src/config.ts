@@ -9,6 +9,8 @@ export const config = {
   databaseUrl: process.env.DATABASE_URL,
   allowMemoryStorage: process.env.ALLOW_MEMORY_STORAGE === "true",
   aiProvider: process.env.AI_PROVIDER ?? "openai",
+  aiProviderOrder: list(process.env.AI_PROVIDER_ORDER),
+  aiFallbackEnabled: process.env.AI_FALLBACK_ENABLED !== "false",
   openAiApiKey: process.env.OPENAI_API_KEY,
   openAiBaseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
   geminiApiKey: process.env.GEMINI_API_KEY,
