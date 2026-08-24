@@ -16,7 +16,8 @@ type TokenBundle = {
 };
 
 const HUBSPOT_SCOPES = ["crm.objects.contacts.read", "crm.objects.contacts.write"];
-const GOOGLE_GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"];
+export const GOOGLE_GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+const GOOGLE_GMAIL_SCOPES = [GOOGLE_GMAIL_SEND_SCOPE];
 const GOOGLE_CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events"];
 
 function oauthLog(stage: string, fields: Record<string, unknown> = {}) {
@@ -119,23 +120,15 @@ async function identify(provider: OAuthProvider, accessToken: string, token: Tok
     return { accountId: typeof data.hub_id === "number" ? String(data.hub_id) : token.accountId, accountEmail: typeof data.user === "string" ? data.user : undefined, scopes: Array.isArray(data.scopes) ? data.scopes.filter((item): item is string => typeof item === "string") : token.scopes };
   }
   if (provider === "google_gmail") {
-    oauthLog("gmail_profile_validation_started");
-    let response: Response;
-    try {
-      response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", { headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" }, signal: AbortSignal.timeout(8000) });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      oauthLog("gmail_profile_validation_network_failed", { error: message });
-      throw new Error(`Gmail OAuth token could not be validated because Gmail was unreachable: ${message}`);
-    }
-    const data = await response.json().catch(() => ({})) as Record<string, unknown>;
-    if (!response.ok || typeof data.emailAddress !== "string") {
-      const detail = oauthError(data, `Gmail profile validation failed (HTTP ${response.status})`);
-      oauthLog("gmail_profile_validation_rejected", { httpStatus: response.status, error: detail });
-      throw new Error(`Gmail OAuth token could not be validated: ${detail}. Please reconnect Gmail.`);
-    }
-    oauthLog("gmail_profile_validation_succeeded", { accountEmail: data.emailAddress, scopes: token.scopes });
-    return { accountId: data.emailAddress, accountEmail: data.emailAddress, scopes: token.scopes };
+    // Gmail users.getProfile requires a read/metadata/compose/modify scope and
+    // is not authorized by gmail.send alone. Do not call it here: sending via
+    // users.messages.send is the operation this connection is explicitly for.
+    const scopes = token.scopes ?? [];
+    const hasSendScope = scopes.includes(GOOGLE_GMAIL_SEND_SCOPE);
+    oauthLog("gmail_send_scope_validation", { hasSendScope, scopes });
+    if (!hasSendScope) throw new Error("Google did not grant the Gmail send permission. Please reconnect Gmail and approve sending access.");
+    oauthLog("gmail_profile_validation_skipped", { reason: "users.getProfile requires a broader Gmail scope than gmail.send", scopes });
+    return { accountId: undefined, accountEmail: undefined, scopes };
   }
   const response = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary", { headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(8000) });
   const data = await response.json().catch(() => ({})) as Record<string, unknown>;
