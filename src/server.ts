@@ -208,7 +208,7 @@ app.post("/v1/admin/ai/providers/:providerId/models/refresh", withIdentity(async
   const providerId = String(request.params.providerId);
   const configured = await store.getAiProvider(providerId);
   if (!configured) return response.status(404).json({ error: "AI provider not found.", code: "AI_PROVIDER_NOT_FOUND" });
-  const runtimeProvider = (await resolveAiProviders(store)).find((item) => item.id === providerId);
+  const runtimeProvider = (await resolveAiProviders(store) ?? []).find((item) => item.id === providerId);
   if (!runtimeProvider) return response.status(409).json({ error: "This provider is not available. Check that it is enabled and its secret is configured.", code: "AI_PROVIDER_UNAVAILABLE" });
   const catalog = (await loadAiProviderCatalog([runtimeProvider]))[0];
   return response.json(catalog);

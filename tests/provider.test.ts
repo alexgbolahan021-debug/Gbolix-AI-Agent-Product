@@ -59,7 +59,7 @@ test("admin provider secrets decrypt only into runtime objects and are never par
   const encrypted = encryptProviderApiKey("admin-provider-secret");
   const store = { listAiProviderSecrets: async () => [{ id: "provider-a", name: "Provider A", adapter: "openai_compatible" as const, baseUrl: "https://api.example.com/v1", encryptedApiKey: encrypted, defaultModel: "model-a", priority: 10, apiKeyConfigured: true, enabled: true, createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }] };
   const runtime = await resolveAiProviders(store);
-  assert.equal(runtime[0]?.apiKey, "admin-provider-secret");
+  assert.equal(runtime?.[0]?.apiKey, "admin-provider-secret");
   const publicRecord = { ...(await store.listAiProviderSecrets())[0] };
   delete (publicRecord as Record<string, unknown>).encryptedApiKey;
   assert.equal(JSON.stringify(publicRecord).includes("admin-provider-secret"), false);
