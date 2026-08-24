@@ -1,0 +1,95 @@
+name: Wire Test Email backend
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '.github/workflows/wire-test-email-endpoint.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Patch runtime and server
+        shell: python
+        run: |
+          from pathlib import Path
+
+          runtime = Path('src/runtime.ts')
+          text = runtime.read_text()
+          old = 'async function executeGmailSend(connection: StoredAgentConnection, rawArguments: string): Promise<{ output: string; handoff: boolean }>'
+          new = 'export async function executeGmailSend(connection: StoredAgentConnection, rawArguments: string): Promise<{ output: string; handoff: boolean }>'
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif new not in text:
+              raise SystemExit('Could not locate executeGmailSend; refusing to edit runtime.ts')
+          runtime.write_text(text)
+
+          server = Path('src/server.ts')
+          text = server.read_text()
+          old_import = 'import { AgentRuntime } from "./runtime.js";'
+          new_import = 'import { AgentRuntime, executeGmailSend } from "./runtime.js";'
+          if old_import in text and 'executeGmailSend' not in text.split(old_import, 1)[0]:
+              text = text.replace(old_import, new_import, 1)
+          elif new_import not in text:
+              raise SystemExit('Could not locate runtime import; refusing to edit server.ts')
+
+          if 'app.post("/v1/agents/:agentId/test-email"' not in text:
+              marker = 'app.post("/v1/agents/:agentId/messages"'
+              if marker not in text:
+                  raise SystemExit('Could not locate messages route; refusing to edit server.ts')
+              route = '''app.post("/v1/agents/:agentId/test-email", withIdentity(async (request, response, identity) => {
+  const agent = await store.getAgent(String(request.params.agentId));
+  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
+  if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required to test email sending.", code: "LEVEL_REQUIRED", level: 3 });
+  const body = request.body as Record<string, unknown>;
+  const to = typeof body.to === "string" ? body.to.trim() : "";
+  const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (!to || !subject || !message) return response.status(400).json({ error: "Recipient, subject, and message are required." });
+  const connections = await store.listConnections(agent.id, identity.workspaceId);
+  const gmail = connections.find((item) => item.kind === "native" && item.provider === "google_gmail" && item.status === "connected" && item.permissions.includes("https://www.googleapis.com/auth/gmail.send"));
+  if (!gmail) return response.status(409).json({ error: "Connect Google Gmail and enable Send email before testing this capability.", code: "GMAIL_CONNECTION_REQUIRED" });
+  const stored = await store.getConnection(gmail.id, agent.id, identity.workspaceId);
+  if (!stored) return response.status(409).json({ error: "The Gmail connection could not be loaded. Please reconnect Gmail.", code: "GMAIL_CONNECTION_INVALID" });
+  const result = await executeGmailSend(stored, JSON.stringify({ to, subject, body: message }));
+  let payload: Record<string, unknown> = { ok: false, error: "Gmail send failed." };
+  try { payload = JSON.parse(result.output) as Record<string, unknown>; } catch { payload = { ok: false, error: result.output }; }
+  if (payload.ok !== true) return response.status(502).json(payload);
+  await store.addAuditEvent({ actorId: identity.subject, workspaceId: identity.workspaceId, action: "agent.test_email_sent", targetType: "agent", targetId: agent.id, metadata: { recipient: to, subject } });
+  return response.json({ ok: true, messageId: payload.messageId ?? null, recipient: to, subject });
+}));
+
+'''
+              text = text.replace(marker, route + marker, 1)
+          server.write_text(text)
+
+      - name: Verify backend
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+          npm test
+
+      - name: Commit verified backend
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/runtime.ts src/server.ts
+          if git diff --cached --quiet; then
+            echo 'No changes needed.'
+            exit 0
+          fi
+          git commit -m 'feat: add authenticated Test Email endpoint'
+          git push
