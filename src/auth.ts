@@ -16,7 +16,7 @@ export async function resolveIdentity(request: { headers: Record<string, string 
     if (deployment) return { subject: `deployment:${deployment.deployment.id}`, workspaceId: deployment.agent.workspaceId, authType: "deployment" };
   }
   const apiKey = await store.getApiKeyByHash(hash(credential));
-  if (apiKey) return { subject: `api-key:${apiKey.id}`, workspaceId: apiKey.workspaceId, authType: "api-key" };
+  if (apiKey) { if (options?.requireAdmin) throw new Error("Admin access required."); return { subject: `api-key:${apiKey.id}`, workspaceId: apiKey.workspaceId, authType: "api-key" }; }
   const identity = await verifyIdentityToken(credential);
   if (options?.requireAdmin && !identity.isAdmin) throw new Error("Admin access required.");
   return identity;

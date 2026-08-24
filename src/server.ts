@@ -8,11 +8,11 @@ import { config, isProductionConfig } from "./config.js";
 import { resolveIdentity, resolveInternalIdentity } from "./auth.js";
 import { CreditError, CreditService } from "./credits.js";
 import { AgentRuntime } from "./runtime.js";
-import { publicAIError } from "./provider.js";
+import { clearProviderModelCache, encryptProviderApiKey, publicAIError, resolveAiProviders } from "./provider.js";
 import { BUILTIN_TOOLS } from "./tools.js";
 import { createStore, hash } from "./store.js";
 import { callbackPage, completeOAuth, createAuthorizationUrl, oauthConfigured, type OAuthProvider } from "./oauth.js";
-import type { Agent, AgentConnection, ConversationStatus, Identity } from "./types.js";
+import type { Agent, AgentConnection, AiProviderAdapter, ConversationStatus, Identity } from "./types.js";
 import { encryptGmailCredentials, GmailTestEmailError, sendGmailTestEmail } from "./testEmail.js";
 import { approveReply, createCampaign, pollAgentReplies, pollAllConfiguredAgents, publicEmailError, runCampaign } from "./emailAutomation.js";
 import { loadAiProviderCatalog } from "./aiCatalog.js";
@@ -171,27 +171,48 @@ app.get("/v1/agents/:agentId/connections", withIdentity(async (request, response
 app.post("/v1/agents/:agentId/connections", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required to connect tools and external systems.", code: "LEVEL_REQUIRED", level: 3 }); const body = request.body as Record<string, unknown>; const kind = body.kind === "custom_api" ? "custom_api" : body.kind === "native" ? "native" : undefined; const provider = typeof body.provider === "string" ? body.provider.trim().slice(0, 80) : ""; const name = typeof body.name === "string" ? body.name.trim().slice(0, 120) : ""; if (!kind || !provider || !name) return response.status(400).json({ error: "kind, provider, and name are required" }); if (kind === "native") return response.status(501).json({ error: "Native OAuth connections are not enabled yet. Configure a Custom API connection or add the provider OAuth credentials first.", code: "OAUTH_PROVIDER_NOT_CONFIGURED" }); const rawEndpoint = typeof body.endpoint === "string" ? body.endpoint.trim() : ""; const endpoint = await safeKnowledgeUrl(rawEndpoint); if (!endpoint) return response.status(400).json({ error: "endpoint must be a public http(s) URL" }); const method = ["GET", "POST", "PUT", "PATCH", "DELETE"].includes(String(body.method).toUpperCase()) ? String(body.method).toUpperCase() as AgentConnection["method"] : "GET"; const authType = body.authType === "api_key" || body.authType === "bearer" ? body.authType : "none"; const secret = typeof body.secret === "string" ? body.secret : ""; if (authType !== "none" && !secret) return response.status(400).json({ error: "A secret is required for API key or Bearer authentication" }); const headers = safeStringMap(body.headers); const parameters = safeStringMap(body.parameters); const encryptedSecret = secret ? sealSecret(secret) : undefined; const connection = await store.createConnection({ agentId: agent.id, workspaceId: identity.workspaceId, kind, provider, name, endpoint: endpoint.toString(), method, authType, encryptedSecret, headers, parameters, permissions: Array.isArray(body.permissions) ? body.permissions.filter((item): item is string => typeof item === "string").slice(0, 10) : [] }); await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "connection.create", targetType: "agent", targetId: agent.id, metadata: { kind, provider } }); return response.status(201).json(connection); }));
 app.delete("/v1/agents/:agentId/connections/:connectionId", withIdentity(async (request, response, identity) => { const removed = await store.deleteConnection(String(request.params.connectionId), String(request.params.agentId), identity.workspaceId); return removed ? response.status(204).send() : response.status(404).json({ error: "Connection not found" }); }));
 
-app.get("/v1/agents/:agentId/ai/providers", withIdentity(async (request, response, identity) => {
-  const agent = await store.getAgent(String(request.params.agentId));
-  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
-  const settings = await store.getAiProviderSettings(agent.id, identity.workspaceId) ?? { agentId: agent.id, workspaceId: agent.workspaceId, providerOrder: ["gemini", "openai"] as const, models: {}, fallbackEnabled: true, autoUpdateModels: true, updatedAt: new Date(0).toISOString() };
-  return response.json({ settings, catalogs: await loadAiProviderCatalog() });
-}));
-app.patch("/v1/agents/:agentId/ai/providers", withIdentity(async (request, response, identity) => {
-  const agent = await store.getAgent(String(request.params.agentId));
-  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
-  if (identity.authType !== "identity") return response.status(403).json({ error: "Only an authenticated workspace administrator can change AI provider settings.", code: "ADMIN_REQUIRED" });
-  const body = request.body as Record<string, unknown>;
-  const rawOrder = Array.isArray(body.providerOrder) ? body.providerOrder : [];
-  const providerOrder = [...new Set(rawOrder.filter((item): item is "gemini" | "openai" => item === "gemini" || item === "openai"))];
-  if (!providerOrder.length) return response.status(400).json({ error: "Select at least one AI provider." });
-  const rawModels = body.models && typeof body.models === "object" && !Array.isArray(body.models) ? body.models as Record<string, unknown> : {};
-  const models: Partial<Record<"gemini" | "openai", string>> = {};
-  for (const provider of ["gemini", "openai"] as const) if (typeof rawModels[provider] === "string" && rawModels[provider].trim()) models[provider] = rawModels[provider].trim().slice(0, 160);
-  const settings = await store.upsertAiProviderSettings({ agentId: agent.id, workspaceId: agent.workspaceId, providerOrder, models, fallbackEnabled: body.fallbackEnabled !== false, autoUpdateModels: body.autoUpdateModels !== false });
-  await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "ai.provider_settings.update", targetType: "agent", targetId: agent.id, metadata: { providerOrder, models, fallbackEnabled: settings.fallbackEnabled, autoUpdateModels: settings.autoUpdateModels } });
-  return response.json(settings);
-}));
+app.get("/v1/admin/ai/providers", withIdentity(async (_request, response) => {
+  const providers = await store.listAiProviders();
+  const catalogs = await loadAiProviderCatalog(await resolveAiProviders(store));
+  return response.json({ providers, catalogs });
+}, { requireAdmin: true }));
+app.post("/v1/admin/ai/providers", withIdentity(async (request, response, identity) => {
+  const input = await parseAdminProviderInput(request.body as Record<string, unknown>);
+  if (!input.ok) return response.status(input.status).json({ error: input.error, code: "AI_PROVIDER_INVALID" });
+  if (await store.getAiProvider(input.value.id)) return response.status(409).json({ error: "A provider with this identifier already exists.", code: "AI_PROVIDER_EXISTS" });
+  const provider = await store.upsertAiProvider({ id: input.value.id, name: input.value.name, adapter: input.value.adapter, baseUrl: input.value.baseUrl, defaultModel: input.value.defaultModel, priority: input.value.priority, enabled: input.value.enabled, encryptedApiKey: encryptProviderApiKey(input.value.apiKey) });
+  clearProviderModelCache(provider.id);
+  await store.addAuditEvent({ actorId: identity.subject, workspaceId: identity.workspaceId, action: "ai.provider.create", targetType: "ai_provider", targetId: provider.id, metadata: { adapter: provider.adapter, enabled: provider.enabled, priority: provider.priority } });
+  return response.status(201).json(provider);
+}, { requireAdmin: true }));
+app.patch("/v1/admin/ai/providers/:providerId", withIdentity(async (request, response, identity) => {
+  const providerId = String(request.params.providerId);
+  const current = await store.getAiProvider(providerId);
+  if (!current) return response.status(404).json({ error: "AI provider not found.", code: "AI_PROVIDER_NOT_FOUND" });
+  const input = await parseAdminProviderInput(request.body as Record<string, unknown>, providerId, current);
+  if (!input.ok) return response.status(input.status).json({ error: input.error, code: "AI_PROVIDER_INVALID" });
+  const updated = await store.upsertAiProvider({ id: input.value.id, name: input.value.name, adapter: input.value.adapter, baseUrl: input.value.baseUrl, defaultModel: input.value.defaultModel, priority: input.value.priority, enabled: input.value.enabled, encryptedApiKey: input.value.apiKey ? encryptProviderApiKey(input.value.apiKey) : undefined });
+  clearProviderModelCache(updated.id);
+  await store.addAuditEvent({ actorId: identity.subject, workspaceId: identity.workspaceId, action: "ai.provider.update", targetType: "ai_provider", targetId: updated.id, metadata: { adapter: updated.adapter, enabled: updated.enabled, priority: updated.priority, apiKeyRotated: Boolean(input.value.apiKey) } });
+  return response.json(updated);
+}, { requireAdmin: true }));
+app.delete("/v1/admin/ai/providers/:providerId", withIdentity(async (request, response, identity) => {
+  const providerId = String(request.params.providerId);
+  const removed = await store.deleteAiProvider(providerId);
+  clearProviderModelCache(providerId);
+  if (!removed) return response.status(404).json({ error: "AI provider not found.", code: "AI_PROVIDER_NOT_FOUND" });
+  await store.addAuditEvent({ actorId: identity.subject, workspaceId: identity.workspaceId, action: "ai.provider.delete", targetType: "ai_provider", targetId: providerId, metadata: {} });
+  return response.status(204).send();
+}, { requireAdmin: true }));
+app.post("/v1/admin/ai/providers/:providerId/models/refresh", withIdentity(async (request, response) => {
+  const providerId = String(request.params.providerId);
+  const configured = await store.getAiProvider(providerId);
+  if (!configured) return response.status(404).json({ error: "AI provider not found.", code: "AI_PROVIDER_NOT_FOUND" });
+  const runtimeProvider = (await resolveAiProviders(store)).find((item) => item.id === providerId);
+  if (!runtimeProvider) return response.status(409).json({ error: "This provider is not available. Check that it is enabled and its secret is configured.", code: "AI_PROVIDER_UNAVAILABLE" });
+  const catalog = (await loadAiProviderCatalog([runtimeProvider]))[0];
+  return response.json(catalog);
+}, { requireAdmin: true }));
 app.get("/v1/agents/:agentId/email/settings", withIdentity(async (request, response, identity) => {
   const agent = await store.getAgent(String(request.params.agentId));
   if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
@@ -292,6 +313,26 @@ function safeStringMap(value: unknown): Record<string, string> { if (!value || t
 function sealSecret(value: string): string { if (!config.connectionEncryptionKey) throw new Error("AGENT_CONNECTION_ENCRYPTION_KEY is required before storing connection secrets."); const key = crypto.createHash("sha256").update(config.connectionEncryptionKey).digest(); const iv = crypto.randomBytes(12); const cipher = crypto.createCipheriv("aes-256-gcm", key, iv); const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]); const tag = cipher.getAuthTag(); return `v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`; }
 function bearerToken(request: Request) { const value = request.header("authorization"); return value?.startsWith("Bearer ") ? value.slice(7) : undefined; }
 function allowCors(request: Request, response: Response, next: NextFunction, origin?: string) { if (origin) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Vary", "Origin"); response.setHeader("Access-Control-Allow-Headers", "content-type,authorization,x-request-id"); response.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS"); } if (request.method === "OPTIONS") return response.status(204).end(); return next(); }
+async function parseAdminProviderInput(body: Record<string, unknown>, forcedId?: string, current?: { id: string; name: string; adapter: AiProviderAdapter; baseUrl: string; defaultModel: string; priority: number; enabled: boolean }): Promise<{ ok: true; value: { id: string; name: string; adapter: AiProviderAdapter; baseUrl: string; apiKey: string; defaultModel: string; priority: number; enabled: boolean } } | { ok: false; status: number; error: string }> {
+  const idValue = forcedId ?? (typeof body.id === "string" ? body.id.trim().toLowerCase() : "");
+  if (!/^[a-z0-9](?:[a-z0-9_-]{0,62})$/.test(idValue)) return { ok: false, status: 400, error: "id must be 1-63 characters using lowercase letters, numbers, hyphens, or underscores." };
+  const name = typeof body.name === "string" ? body.name.trim().slice(0, 120) : current?.name ?? "";
+  if (!name) return { ok: false, status: 400, error: "name is required." };
+  const adapter = body.adapter === "gemini" || body.adapter === "openai_compatible" ? body.adapter : current?.adapter;
+  if (!adapter) return { ok: false, status: 400, error: "adapter must be gemini or openai_compatible." };
+  const defaultBaseUrl = adapter === "gemini" ? "https://generativelanguage.googleapis.com/v1beta" : "https://api.openai.com/v1";
+  const baseUrlValue = typeof body.baseUrl === "string" && body.baseUrl.trim() ? body.baseUrl.trim() : current?.baseUrl ?? defaultBaseUrl;
+  let baseUrl: URL;
+  try { baseUrl = new URL(baseUrlValue); } catch { return { ok: false, status: 400, error: "baseUrl must be a valid public HTTPS URL." }; }
+  if (baseUrl.protocol !== "https:" || baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash || baseUrl.toString().length > 4096 || isPrivateHostname(baseUrl.hostname)) return { ok: false, status: 400, error: "baseUrl must be a public HTTPS URL without credentials or query parameters." };
+  const secret = typeof body.apiKey === "string" ? body.apiKey.trim() : "";
+  if (secret.length > 4096) return { ok: false, status: 413, error: "The provider API key is too long." };
+  if (!current && !secret) return { ok: false, status: 400, error: "apiKey is required when adding a provider." };
+  const defaultModel = typeof body.defaultModel === "string" ? body.defaultModel.trim().slice(0, 160) : current?.defaultModel ?? "";
+  const numericPriority = body.priority === undefined ? current?.priority ?? 100 : Number(body.priority);
+  if (!Number.isInteger(numericPriority) || numericPriority < 0 || numericPriority > 100000) return { ok: false, status: 400, error: "priority must be an integer from 0 to 100000." };
+  return { ok: true, value: { id: idValue, name, adapter, baseUrl: baseUrl.toString().replace(/\/$/, ""), apiKey: secret, defaultModel, priority: numericPriority, enabled: body.enabled === undefined ? current?.enabled ?? true : body.enabled !== false } };
+}
 async function safeKnowledgeUrl(raw: string) { try { const target = new URL(raw); if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password || target.pathname.length > 2048 || target.toString().length > 4096 || isPrivateHostname(target.hostname)) return undefined; const addresses = await lookup(target.hostname, { all: true }); if (!addresses.length || addresses.some((entry) => isPrivateIp(entry.address))) return undefined; return target; } catch { return undefined; } }
 function isPrivateHostname(hostname: string) { const normalized = hostname.toLowerCase(); return normalized === "localhost" || normalized.endsWith(".local") || normalized.endsWith(".internal") || normalized === "metadata.google.internal"; }
 function normalizeEnabledTools(level: number, value: unknown): string[] | undefined { if (!Array.isArray(value)) return undefined; if (level < 3) return []; return [...new Set(value.filter((item): item is string => typeof item === "string" && Object.prototype.hasOwnProperty.call(BUILTIN_TOOLS, item)))]; }

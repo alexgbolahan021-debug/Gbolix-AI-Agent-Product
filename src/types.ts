@@ -100,10 +100,14 @@ export type EmailRowStatus = "queued" | "sent" | "failed" | "skipped";
 export type EmailCampaign = { id: string; agentId: string; workspaceId: string; status: EmailCampaignStatus; subjectTemplate: string; bodyTemplate: string; messageMode: "shared" | "per_row"; totalRows: number; sentRows: number; failedRows: number; createdAt: string; updatedAt: string };
 export type EmailCampaignRow = { id: string; campaignId: string; rowNumber: number; email: string; data: Record<string, string>; subject: string; body: string; status: EmailRowStatus; messageId?: string; threadId?: string; error?: string; createdAt: string; updatedAt: string };
 export type EmailReplyEvent = { id: string; agentId: string; workspaceId: string; gmailMessageId: string; threadId: string; fromEmail?: string; subject?: string; receivedAt?: string; body: string; status: "pending" | "sent" | "ignored" | "failed"; replyBody?: string; replyMessageId?: string; error?: string; createdAt: string; updatedAt: string };
-export type AiProviderId = "gemini" | "openai";
+export type AiProviderId = string;
+export type AiProviderAdapter = "gemini" | "openai_compatible";
+export type AiProvider = { id: AiProviderId; name: string; adapter: AiProviderAdapter; baseUrl: string; apiKeyConfigured: boolean; defaultModel: string; priority: number; enabled: boolean; createdAt: string; updatedAt: string };
+export type StoredAiProvider = AiProvider & { encryptedApiKey?: string };
+export type AiProviderRuntime = { id: AiProviderId; name: string; adapter: AiProviderAdapter; baseUrl: string; apiKey: string; defaultModel: string; priority: number; enabled: boolean };
 export type AiProviderSettings = { agentId: string; workspaceId: string; providerOrder: AiProviderId[]; models: Partial<Record<AiProviderId, string>>; fallbackEnabled: boolean; autoUpdateModels: boolean; updatedAt: string };
 export type AiModelInfo = { id: string; displayName?: string; live: boolean; deprecated?: boolean };
-export type AiProviderCatalog = { provider: AiProviderId; configured: boolean; available: boolean; models: AiModelInfo[]; checkedAt: string; error?: string };
+export type AiProviderCatalog = { provider: AiProviderId; name?: string; adapter?: AiProviderAdapter; configured: boolean; available: boolean; models: AiModelInfo[]; checkedAt: string; error?: string };
 
 export type ApiKeyRecord = {
   id: string;
@@ -180,6 +184,11 @@ export type Store = {
   listAgentsWithEmailAutomation(): Promise<Agent[]>;
   getAiProviderSettings(agentId: string, workspaceId: string): Promise<AiProviderSettings | undefined>;
   upsertAiProviderSettings(input: Omit<AiProviderSettings, "updatedAt">): Promise<AiProviderSettings>;
+  listAiProviders(): Promise<AiProvider[]>;
+  listAiProviderSecrets(): Promise<StoredAiProvider[]>;
+  getAiProvider(providerId: string): Promise<StoredAiProvider | undefined>;
+  upsertAiProvider(input: { id: string; name: string; adapter: AiProviderAdapter; baseUrl: string; encryptedApiKey?: string; defaultModel: string; priority: number; enabled: boolean }): Promise<AiProvider>;
+  deleteAiProvider(providerId: string): Promise<boolean>;
   getEmailSettings(agentId: string, workspaceId: string): Promise<EmailSettings | undefined>;
   upsertEmailSettings(input: Omit<EmailSettings, "updatedAt">): Promise<EmailSettings>;
   createEmailCampaign(input: Omit<EmailCampaign, "id" | "createdAt" | "updatedAt" | "sentRows" | "failedRows">): Promise<EmailCampaign>;
