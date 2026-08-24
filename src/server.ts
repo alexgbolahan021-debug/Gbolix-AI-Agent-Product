@@ -13,6 +13,7 @@ import { createStore, hash } from "./store.js";
 import { callbackPage, completeOAuth, createAuthorizationUrl, oauthConfigured, type OAuthProvider } from "./oauth.js";
 import type { Agent, AgentConnection, ConversationStatus, Identity } from "./types.js";
 import { encryptGmailCredentials, GmailTestEmailError, sendGmailTestEmail } from "./testEmail.js";
+import { approveReply, createCampaign, pollAgentReplies, pollAllConfiguredAgents, runCampaign } from "./emailAutomation.js";
 
 const store = await createStore();
 const credits = new CreditService();
@@ -168,6 +169,56 @@ app.get("/v1/agents/:agentId/connections", withIdentity(async (request, response
 app.post("/v1/agents/:agentId/connections", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required to connect tools and external systems.", code: "LEVEL_REQUIRED", level: 3 }); const body = request.body as Record<string, unknown>; const kind = body.kind === "custom_api" ? "custom_api" : body.kind === "native" ? "native" : undefined; const provider = typeof body.provider === "string" ? body.provider.trim().slice(0, 80) : ""; const name = typeof body.name === "string" ? body.name.trim().slice(0, 120) : ""; if (!kind || !provider || !name) return response.status(400).json({ error: "kind, provider, and name are required" }); if (kind === "native") return response.status(501).json({ error: "Native OAuth connections are not enabled yet. Configure a Custom API connection or add the provider OAuth credentials first.", code: "OAUTH_PROVIDER_NOT_CONFIGURED" }); const rawEndpoint = typeof body.endpoint === "string" ? body.endpoint.trim() : ""; const endpoint = await safeKnowledgeUrl(rawEndpoint); if (!endpoint) return response.status(400).json({ error: "endpoint must be a public http(s) URL" }); const method = ["GET", "POST", "PUT", "PATCH", "DELETE"].includes(String(body.method).toUpperCase()) ? String(body.method).toUpperCase() as AgentConnection["method"] : "GET"; const authType = body.authType === "api_key" || body.authType === "bearer" ? body.authType : "none"; const secret = typeof body.secret === "string" ? body.secret : ""; if (authType !== "none" && !secret) return response.status(400).json({ error: "A secret is required for API key or Bearer authentication" }); const headers = safeStringMap(body.headers); const parameters = safeStringMap(body.parameters); const encryptedSecret = secret ? sealSecret(secret) : undefined; const connection = await store.createConnection({ agentId: agent.id, workspaceId: identity.workspaceId, kind, provider, name, endpoint: endpoint.toString(), method, authType, encryptedSecret, headers, parameters, permissions: Array.isArray(body.permissions) ? body.permissions.filter((item): item is string => typeof item === "string").slice(0, 10) : [] }); await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "connection.create", targetType: "agent", targetId: agent.id, metadata: { kind, provider } }); return response.status(201).json(connection); }));
 app.delete("/v1/agents/:agentId/connections/:connectionId", withIdentity(async (request, response, identity) => { const removed = await store.deleteConnection(String(request.params.connectionId), String(request.params.agentId), identity.workspaceId); return removed ? response.status(204).send() : response.status(404).json({ error: "Connection not found" }); }));
 
+app.get("/v1/agents/:agentId/email/settings", withIdentity(async (request, response, identity) => {
+  const agent = await store.getAgent(String(request.params.agentId));
+  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
+  if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required for email automation.", code: "LEVEL_REQUIRED", level: 3 });
+  return response.json(await store.getEmailSettings(agent.id, identity.workspaceId) ?? { agentId: agent.id, workspaceId: agent.workspaceId, replyMode: "off", replyScope: "agent_sent", matchingQuery: "", updatedAt: new Date(0).toISOString() });
+}));
+app.patch("/v1/agents/:agentId/email/settings", withIdentity(async (request, response, identity) => {
+  const agent = await store.getAgent(String(request.params.agentId));
+  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
+  if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required for email automation.", code: "LEVEL_REQUIRED", level: 3 });
+  const body = request.body as Record<string, unknown>;
+  const replyMode = ["off", "draft", "automatic"].includes(String(body.replyMode)) ? String(body.replyMode) as "off" | "draft" | "automatic" : undefined;
+  const replyScope = ["agent_sent", "matching_rules", "both"].includes(String(body.replyScope)) ? String(body.replyScope) as "agent_sent" | "matching_rules" | "both" : undefined;
+  if (!replyMode || !replyScope) return response.status(400).json({ error: "replyMode must be off, draft, or automatic, and replyScope must be agent_sent, matching_rules, or both." });
+  if (replyMode !== "off" && !agent.enabledTools.includes("send_email")) return response.status(403).json({ error: "Enable the approved Send email action in Configure before enabling reply automation.", code: "EMAIL_ACTION_NOT_APPROVED" });
+  const settings = await store.upsertEmailSettings({ agentId: agent.id, workspaceId: agent.workspaceId, replyMode, replyScope, matchingQuery: typeof body.matchingQuery === "string" ? body.matchingQuery.trim().slice(0, 300) : "" });
+  await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "email.settings.update", targetType: "agent", targetId: agent.id, metadata: { replyMode, replyScope } });
+  return response.json(settings);
+}));
+app.post("/v1/agents/:agentId/email/campaigns", withIdentity(async (request, response, identity) => {
+  const agent = await store.getAgent(String(request.params.agentId));
+  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
+  if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required for bulk email campaigns.", code: "LEVEL_REQUIRED", level: 3 });
+  if (!agent.enabledTools.includes("send_email")) return response.status(403).json({ error: "Enable the approved Send email action in Configure before creating a bulk campaign.", code: "EMAIL_ACTION_NOT_APPROVED" });
+  const body = request.body as Record<string, unknown>;
+  const csv = typeof body.csv === "string" ? body.csv : "";
+  if (csv.length > 700000) return response.status(413).json({ error: "CSV is too large. Please upload a file under 500 KB." });
+  try {
+    const result = await createCampaign(store, agent, { csv, subjectTemplate: typeof body.subjectTemplate === "string" ? body.subjectTemplate : "", bodyTemplate: typeof body.bodyTemplate === "string" ? body.bodyTemplate : "", messageMode: body.messageMode === "per_row" ? "per_row" : "shared" });
+    await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "email.campaign.create", targetType: "agent", targetId: agent.id, metadata: { campaignId: result.campaign.id, totalRows: result.campaign.totalRows, messageMode: result.campaign.messageMode } });
+    return response.status(201).json({ campaign: result.campaign, preview: result.rows.slice(0, 20) });
+  } catch (error) { return response.status(400).json({ error: error instanceof Error ? error.message : "The CSV campaign could not be created.", code: "EMAIL_CAMPAIGN_INVALID" }); }
+}));
+app.get("/v1/agents/:agentId/email/campaigns", withIdentity(async (request, response, identity) => response.json(await store.listEmailCampaigns(String(request.params.agentId), identity.workspaceId, 50))));
+app.get("/v1/agents/:agentId/email/campaigns/:campaignId", withIdentity(async (request, response, identity) => { const campaign = await store.getEmailCampaign(String(request.params.campaignId), String(request.params.agentId), identity.workspaceId); return campaign ? response.json({ campaign, rows: await store.listEmailCampaignRows(campaign.id, 1000) }) : response.status(404).json({ error: "Email campaign not found" }); }));
+app.post("/v1/agents/:agentId/email/campaigns/:campaignId/start", withIdentity(async (request, response, identity) => {
+  const agent = await store.getAgent(String(request.params.agentId));
+  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
+  const campaign = await store.getEmailCampaign(String(request.params.campaignId), agent.id, identity.workspaceId);
+  if (!campaign) return response.status(404).json({ error: "Email campaign not found" });
+  if (!agent.enabledTools.includes("send_email")) return response.status(403).json({ error: "Enable the approved Send email action in Configure before starting a campaign.", code: "EMAIL_ACTION_NOT_APPROVED" });
+  if (!["queued", "paused"].includes(campaign.status)) return response.status(409).json({ error: `Campaign is already ${campaign.status}.` });
+  const running = await store.updateEmailCampaign(campaign.id, agent.id, identity.workspaceId, { status: "running" });
+  void runCampaign(store, credits, agent, running ?? campaign).catch(async (error) => { console.error("[Gbolix email-campaign] run_failed", JSON.stringify({ campaignId: campaign.id, agentId: agent.id, workspaceId: agent.workspaceId, error: error instanceof Error ? error.message : String(error) })); await store.updateEmailCampaign(campaign.id, agent.id, identity.workspaceId, { status: "failed" }); });
+  return response.json(running ?? campaign);
+}));
+app.get("/v1/agents/:agentId/email/replies", withIdentity(async (request, response, identity) => response.json(await store.listEmailReplyEvents(String(request.params.agentId), identity.workspaceId, 100))));
+app.post("/v1/agents/:agentId/email/replies/poll", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); try { return response.json({ processed: await pollAgentReplies(store, credits, agent) }); } catch (error) { return response.status(502).json({ error: error instanceof Error ? error.message : "Inbox polling failed." }); } }));
+app.post("/v1/agents/:agentId/email/replies/:replyId/approve", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); const events = await store.listEmailReplyEvents(agent.id, identity.workspaceId, 200); const event = events.find((item) => item.id === String(request.params.replyId)); if (!event) return response.status(404).json({ error: "Reply draft not found" }); try { return response.json(await approveReply(store, credits, agent, event)); } catch (error) { return response.status(502).json({ error: error instanceof Error ? error.message : "Reply could not be sent." }); } }));
+
 app.post("/v1/agents/:agentId/api-keys", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required to create developer API keys.", code: "LEVEL_REQUIRED", level: 3 }); const raw = `gblx_live_${crypto.randomBytes(24).toString("base64url")}`; const record = await store.createApiKey({ agentId: agent.id, workspaceId: identity.workspaceId, keyPrefix: raw.slice(0, 18), keyHash: hash(raw), status: "active" }); return response.status(201).json({ apiKey: raw, record }); }));
 app.get("/v1/agents/:agentId/api-keys", withIdentity(async (request, response, identity) => response.json(await store.listApiKeys(String(request.params.agentId), identity.workspaceId))));
 app.delete("/v1/agents/:agentId/api-keys/:keyId", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); const revoked = await store.revokeApiKey(String(request.params.keyId), agent.id, identity.workspaceId); return revoked ? response.status(204).send() : response.status(404).json({ error: "API key not found" }); }));
@@ -190,6 +241,12 @@ app.get("/v1/admin/activity", withIdentity(async (request, response) => response
 app.get("/v1/admin/settings", withIdentity(async (_request, response) => response.json({ creditMode: config.creditMode, aiProvider: config.aiProvider, storage: config.databaseUrl ? "postgres" : "memory", adminUsers: config.adminUserIds.size, corsOrigins: config.corsOrigins.length }), { requireAdmin: true }));
 app.post("/v1/internal/credit-authorizations", (request, response, next) => { try { resolveInternalIdentity({ headers: request.headers }); return next(); } catch (error) { return next(error); } }, (_request, response) => response.status(501).json({ error: "The platform credit authorization endpoint is owned by Gbolix.site." }));
 app.post("/v1/internal/usage-events", (request, response, next) => { try { resolveInternalIdentity({ headers: request.headers }); return next(); } catch (error) { return next(error); } }, (_request, response) => response.status(501).json({ error: "The platform usage event endpoint is owned by Gbolix.site." }));
+
+if (config.emailPollingEnabled) {
+  const runEmailPoll = () => { void pollAllConfiguredAgents(store, credits).catch((error) => console.error("[Gbolix email-automation] poll_loop_failed", error)); };
+  setTimeout(runEmailPoll, 10000);
+  setInterval(runEmailPoll, Math.max(60000, config.emailPollingIntervalMs));
+}
 
 app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => { const message = error instanceof Error ? error.message : "Unexpected server error"; const status = /authentication|origin|admin access/i.test(message) ? 401 : 500; const requestId = response.getHeader("x-request-id") ?? `http_${crypto.randomBytes(8).toString("hex")}`; console.error("[Gbolix request] unhandled_error", JSON.stringify({ requestId, method: request.method, path: request.path, status, error: message, stack: error instanceof Error ? error.stack : undefined })); response.status(status).json({ error: message, message, code: "REQUEST_FAILED", requestId }); });
 

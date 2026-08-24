@@ -2,7 +2,8 @@ import crypto from "node:crypto";
 import type { AgentConnection } from "./types.js";
 import { config } from "./config.js";
 
-const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+export const GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send";
+export const GMAIL_READ_SCOPE = "https://www.googleapis.com/auth/gmail.readonly";
 
 type GmailTokenBundle = {
   accessToken?: string;
@@ -12,6 +13,8 @@ type GmailTokenBundle = {
   accountId?: string;
   accountEmail?: string;
 };
+
+export type GmailAccessToken = { accessToken: string; accountEmail?: string; scopes?: string[] };
 
 export type GmailTestEmailContext = {
   requestId?: string;
@@ -101,9 +104,35 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export async function getGmailAccessToken(
+  connection: AgentConnection & { encryptedSecret?: string },
+  context: GmailTestEmailContext = {},
+): Promise<GmailAccessToken> {
+  if (connection.provider !== "google_gmail") fail("A Google Gmail connection is required for email automation.", "GMAIL_PROVIDER_INVALID", 409, "connection_validation");
+  if (connection.status !== "connected") fail("Gmail is not connected for this agent. Reconnect Gmail before using email automation.", "GMAIL_NOT_CONNECTED", 409, "connection_validation");
+  if (!connection.encryptedSecret) fail("The Gmail connection has no stored credentials. Please reconnect Gmail.", "GMAIL_CREDENTIALS_MISSING", 409, "connection_validation");
+  const scopes = connection.permissions;
+  if (!scopes.includes(GMAIL_SEND_SCOPE)) fail("The connected Gmail account does not have permission to send email. Please reconnect Gmail and approve Gmail sending access.", "GMAIL_SEND_SCOPE_MISSING", 409, "connection_validation");
+  if (!scopes.includes(GMAIL_READ_SCOPE)) fail("Inbox monitoring requires Gmail read permission. Reconnect Gmail and approve Gmail inbox access.", "GMAIL_READ_SCOPE_MISSING", 409, "connection_validation");
+  const decrypted = decryptSecret(connection.encryptedSecret, context);
+  let bundle: GmailTokenBundle;
+  try { bundle = JSON.parse(decrypted) as GmailTokenBundle; } catch (error) { fail("The stored Gmail credentials are invalid. Please reconnect Gmail.", "GMAIL_CREDENTIALS_INVALID", 409, "credentials_parse", error); }
+  if (!bundle.accessToken) fail("The Gmail connection is missing an access token. Please reconnect Gmail.", "GMAIL_ACCESS_TOKEN_MISSING", 409, "token_validation");
+  if (bundle.expiresAt && bundle.expiresAt <= Date.now() + 60_000) {
+    if (!bundle.refreshToken || !config.googleClientId || !config.googleClientSecret) fail("The Gmail connection has expired and cannot be refreshed. Please reconnect Gmail.", "GMAIL_REAUTH_REQUIRED", 409, "token_refresh");
+    let tokenResponse: Response;
+    try { tokenResponse = await fetch("https://oauth2.googleapis.com/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: bundle.refreshToken, client_id: config.googleClientId, client_secret: config.googleClientSecret }).toString(), signal: AbortSignal.timeout(10000) }); } catch (error) { fail(`The Gmail authorization could not be refreshed because Google was unreachable: ${errorMessage(error)}. Please retry or reconnect Gmail.`, "GMAIL_TOKEN_REFRESH_FAILED", 502, "token_refresh", error); }
+    const tokenData = await tokenResponse.json().catch(() => ({})) as Record<string, unknown>;
+    if (!tokenResponse.ok || typeof tokenData.access_token !== "string") fail(`The Gmail connection could not be refreshed: ${parseGoogleError(tokenData, `Google token refresh failed (HTTP ${tokenResponse.status})`)}. Please reconnect Gmail.`, tokenData.error === "invalid_grant" ? "GMAIL_REAUTH_REQUIRED" : "GMAIL_TOKEN_REFRESH_FAILED", tokenData.error === "invalid_grant" ? 409 : 502, "token_refresh");
+    bundle = { ...bundle, accessToken: tokenData.access_token, expiresAt: typeof tokenData.expires_in === "number" ? Date.now() + tokenData.expires_in * 1000 : undefined, refreshToken: typeof tokenData.refresh_token === "string" ? tokenData.refresh_token : bundle.refreshToken };
+    if (context.onTokenRefreshed) await context.onTokenRefreshed(bundle);
+  }
+  return { accessToken: bundle.accessToken!, accountEmail: bundle.accountEmail, scopes: bundle.scopes ?? connection.permissions };
+}
+
 export async function sendGmailTestEmail(
   connection: AgentConnection & { encryptedSecret?: string },
-  input: { to: string; subject: string; message: string },
+  input: { to: string; subject: string; message: string; threadId?: string; inReplyTo?: string; references?: string },
   context: GmailTestEmailContext = {},
 ) {
   logStage("send_started", context, {
@@ -187,18 +216,20 @@ export async function sendGmailTestEmail(
     "MIME-Version: 1.0",
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: 8bit",
+    ...(input.inReplyTo ? [`In-Reply-To: ${input.inReplyTo}`] : []),
+    ...(input.references ? [`References: ${input.references}`] : []),
     "",
     input.message,
   ];
   const encoded = Buffer.from(headers.join("\r\n"), "utf8").toString("base64url");
-  logStage("gmail_api_send_started", context, { connectionId: connection.id, endpoint: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", hasAccessToken: Boolean(accessToken), encodedMessageLength: encoded.length });
+  logStage("gmail_api_send_started", context, { connectionId: connection.id, endpoint: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send", hasAccessToken: Boolean(accessToken), encodedMessageLength: encoded.length, threadId: input.threadId, isReply: Boolean(input.threadId) });
 
   let response: Response;
   try {
     response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
       method: "POST",
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json", accept: "application/json" },
-      body: JSON.stringify({ raw: encoded }),
+      body: JSON.stringify({ raw: encoded, ...(input.threadId ? { threadId: input.threadId } : {}) }),
       signal: AbortSignal.timeout(15000),
     });
   } catch (error) {

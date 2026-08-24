@@ -92,6 +92,14 @@ export type AgentConnection = {
 };
 
 export type StoredAgentConnection = AgentConnection & { encryptedSecret?: string; headers?: Record<string, string>; parameters?: Record<string, string> };
+export type EmailReplyMode = "off" | "draft" | "automatic";
+export type EmailReplyScope = "agent_sent" | "matching_rules" | "both";
+export type EmailSettings = { agentId: string; workspaceId: string; replyMode: EmailReplyMode; replyScope: EmailReplyScope; matchingQuery: string; updatedAt: string };
+export type EmailCampaignStatus = "queued" | "running" | "paused" | "completed" | "failed";
+export type EmailRowStatus = "queued" | "sent" | "failed" | "skipped";
+export type EmailCampaign = { id: string; agentId: string; workspaceId: string; status: EmailCampaignStatus; subjectTemplate: string; bodyTemplate: string; messageMode: "shared" | "per_row"; totalRows: number; sentRows: number; failedRows: number; createdAt: string; updatedAt: string };
+export type EmailCampaignRow = { id: string; campaignId: string; rowNumber: number; email: string; data: Record<string, string>; subject: string; body: string; status: EmailRowStatus; messageId?: string; threadId?: string; error?: string; createdAt: string; updatedAt: string };
+export type EmailReplyEvent = { id: string; agentId: string; workspaceId: string; gmailMessageId: string; threadId: string; fromEmail?: string; subject?: string; receivedAt?: string; body: string; status: "pending" | "sent" | "ignored" | "failed"; replyBody?: string; replyMessageId?: string; error?: string; createdAt: string; updatedAt: string };
 
 export type ApiKeyRecord = {
   id: string;
@@ -165,6 +173,20 @@ export type Store = {
   getConnection(id: string, agentId: string, workspaceId: string): Promise<StoredAgentConnection | undefined>;
   updateConnectionSecret(id: string, agentId: string, workspaceId: string, encryptedSecret: string): Promise<boolean>;
   deleteConnection(id: string, agentId: string, workspaceId: string): Promise<boolean>;
+  listAgentsWithEmailAutomation(): Promise<Agent[]>;
+  getEmailSettings(agentId: string, workspaceId: string): Promise<EmailSettings | undefined>;
+  upsertEmailSettings(input: Omit<EmailSettings, "updatedAt">): Promise<EmailSettings>;
+  createEmailCampaign(input: Omit<EmailCampaign, "id" | "createdAt" | "updatedAt" | "sentRows" | "failedRows">): Promise<EmailCampaign>;
+  listEmailCampaigns(agentId: string, workspaceId: string, limit: number): Promise<EmailCampaign[]>;
+  getEmailCampaign(id: string, agentId: string, workspaceId: string): Promise<EmailCampaign | undefined>;
+  updateEmailCampaign(id: string, agentId: string, workspaceId: string, patch: Partial<Pick<EmailCampaign, "status" | "sentRows" | "failedRows" | "totalRows">>): Promise<EmailCampaign | undefined>;
+  addEmailCampaignRows(rows: Array<Omit<EmailCampaignRow, "id" | "createdAt" | "updatedAt">>): Promise<EmailCampaignRow[]>;
+  listEmailCampaignRows(campaignId: string, limit: number): Promise<EmailCampaignRow[]>;
+  updateEmailCampaignRow(id: string, campaignId: string, patch: Partial<Pick<EmailCampaignRow, "status" | "messageId" | "threadId" | "error">>): Promise<EmailCampaignRow | undefined>;
+  getEmailReplyEvent(agentId: string, gmailMessageId: string): Promise<EmailReplyEvent | undefined>;
+  createEmailReplyEvent(input: Omit<EmailReplyEvent, "id" | "createdAt" | "updatedAt">): Promise<EmailReplyEvent>;
+  updateEmailReplyEvent(id: string, agentId: string, patch: Partial<Pick<EmailReplyEvent, "status" | "replyBody" | "replyMessageId" | "error">>): Promise<EmailReplyEvent | undefined>;
+  listEmailReplyEvents(agentId: string, workspaceId: string, limit: number): Promise<EmailReplyEvent[]>;
   addUsageEvent(event: UsageEvent): Promise<UsageEvent>;
   listUsage(agentId: string, workspaceId: string, limit: number): Promise<UsageEvent[]>;
   addAuditEvent(event: Omit<AuditEvent, "id" | "createdAt">): Promise<AuditEvent>;

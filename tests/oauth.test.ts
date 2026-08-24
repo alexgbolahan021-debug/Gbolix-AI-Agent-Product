@@ -6,7 +6,7 @@ process.env.AGENT_CONNECTION_ENCRYPTION_KEY = "oauth-test-encryption-key";
 process.env.GOOGLE_CLIENT_ID = "oauth-test-client-id";
 process.env.GOOGLE_CLIENT_SECRET = "oauth-test-client-secret";
 
-const { completeOAuth, createAuthorizationUrl, GOOGLE_GMAIL_SEND_SCOPE } = await import("../src/oauth.js");
+const { completeOAuth, createAuthorizationUrl, GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_READ_SCOPE } = await import("../src/oauth.js");
 
 const agent = {
   id: "agent_420f8756940dc10a",
@@ -44,9 +44,9 @@ function makeStore() {
   };
 }
 
-test("Gmail OAuth requests only gmail.send and does not call users.getProfile", async () => {
+test("Gmail OAuth requests gmail.send plus gmail.readonly and does not call users.getProfile", async () => {
   const authorizationUrl = new URL(createAuthorizationUrl("google_gmail", agent.id, agent.workspaceId, "https://engine.example.com/v1/oauth/google_gmail/callback"));
-  assert.equal(authorizationUrl.searchParams.get("scope"), GOOGLE_GMAIL_SEND_SCOPE);
+  assert.equal(authorizationUrl.searchParams.get("scope"), `${GOOGLE_GMAIL_SEND_SCOPE} ${GOOGLE_GMAIL_READ_SCOPE}`);
   assert.equal(authorizationUrl.searchParams.get("access_type"), "offline");
 
   const calls: string[] = [];
@@ -57,7 +57,7 @@ test("Gmail OAuth requests only gmail.send and does not call users.getProfile", 
       access_token: "gmail-access-token",
       refresh_token: "gmail-refresh-token",
       expires_in: 3600,
-      scope: GOOGLE_GMAIL_SEND_SCOPE,
+      scope: `${GOOGLE_GMAIL_SEND_SCOPE} ${GOOGLE_GMAIL_READ_SCOPE}`,
     }), { status: 200, headers: { "content-type": "application/json" } });
   });
   const store = makeStore();
@@ -67,7 +67,7 @@ test("Gmail OAuth requests only gmail.send and does not call users.getProfile", 
     assert.deepEqual(calls, ["https://oauth2.googleapis.com/token"]);
     assert.equal(connection.provider, "google_gmail");
     assert.equal(connection.status, "connected");
-    assert.deepEqual(connection.permissions, [GOOGLE_GMAIL_SEND_SCOPE]);
+    assert.deepEqual(connection.permissions, [GOOGLE_GMAIL_SEND_SCOPE, GOOGLE_GMAIL_READ_SCOPE]);
     assert.equal(store.saved().encryptedSecret.startsWith("v1:"), true);
   } finally {
     restore();

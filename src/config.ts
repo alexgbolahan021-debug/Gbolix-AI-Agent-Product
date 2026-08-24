@@ -33,6 +33,9 @@ export const config = {
   rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 60000),
   rateLimitMaxRequests: Number(process.env.RATE_LIMIT_MAX_REQUESTS ?? 60),
   localCredits: Number(process.env.LOCAL_CREDITS ?? 100000),
+  emailCampaignMaxRows: Number(process.env.EMAIL_CAMPAIGN_MAX_ROWS ?? 500),
+  emailPollingEnabled: process.env.EMAIL_POLLING_ENABLED === "true",
+  emailPollingIntervalMs: Number(process.env.EMAIL_POLLING_INTERVAL_MS ?? 300000),
 };
 
 export function isProductionConfig(): boolean {

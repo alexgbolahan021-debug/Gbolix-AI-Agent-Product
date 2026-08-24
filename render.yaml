@@ -55,6 +55,12 @@ services:
         sync: false
       - key: PUBLIC_BASE_URL
         sync: false
+      - key: EMAIL_CAMPAIGN_MAX_ROWS
+        value: "500"
+      - key: EMAIL_POLLING_ENABLED
+        value: "true"
+      - key: EMAIL_POLLING_INTERVAL_MS
+        value: "300000"
 
 databases:
   - name: gbolix-ai-agent-db
