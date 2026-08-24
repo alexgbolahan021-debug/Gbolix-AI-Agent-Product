@@ -5,14 +5,30 @@ export type ToolDefinition = { type: "function"; function: { name: string; descr
 export type ToolCall = { id: string; function: { name: string; arguments: string } };
 export type Completion = { content: string; toolCalls: ToolCall[]; inputTokens: number; outputTokens: number };
 
+export const PUBLIC_AI_ERROR = "The agent could not generate a response right now. Please try again later.";
+export function publicAIError(_error: unknown): string { return PUBLIC_AI_ERROR; }
+
+function redacted(value: unknown): string {
+  return String(value).replace(/([?&](?:key|api[_-]?key|token|authorization)=)[^&\s]*/gi, "$1[REDACTED]").slice(0, 4000);
+}
+
+function providerFailure(provider: string, detail: unknown): Error {
+  console.error("[Gbolix ai-provider] request_failed", JSON.stringify({ provider, detail: redacted(detail) }));
+  return new Error(publicAIError(detail));
+}
+
 export async function complete(input: { model: string; messages: ChatMessage[]; tools?: ToolDefinition[] }): Promise<Completion> {
   if (config.aiProvider.toLowerCase() === "gemini") return completeWithGemini(input);
   if (!config.openAiApiKey) return fallbackCompletion(input.messages);
-  const response = await fetch(`${config.openAiBaseUrl.replace(/\/$/, "")}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.openAiApiKey}` }, body: JSON.stringify({ model: input.model || config.openAiModel, messages: input.messages, tools: input.tools?.length ? input.tools : undefined, tool_choice: input.tools?.length ? "auto" : undefined, temperature: 0.3 }) });
-  if (!response.ok) throw new Error(`AI provider returned ${response.status}: ${await response.text()}`);
-  const data = await response.json() as any;
+  let response: Response;
+  try {
+    response = await fetch(`${config.openAiBaseUrl.replace(/\/$/, "")}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${config.openAiApiKey}` }, body: JSON.stringify({ model: input.model || config.openAiModel, messages: input.messages, tools: input.tools?.length ? input.tools : undefined, tool_choice: input.tools?.length ? "auto" : undefined, temperature: 0.3 }) });
+  } catch (error) { throw providerFailure("openai", error); }
+  if (!response.ok) throw providerFailure("openai", `HTTP ${response.status}: ${await response.text().catch(() => "response body unavailable")}`);
+  let data: any;
+  try { data = await response.json(); } catch (error) { throw providerFailure("openai", error); }
   const message = data.choices?.[0]?.message;
-  if (!message) throw new Error("AI provider returned no message.");
+  if (!message) throw providerFailure("openai", "provider returned no message");
   return { content: typeof message.content === "string" ? message.content : "", toolCalls: Array.isArray(message.tool_calls) ? message.tool_calls : [], inputTokens: Number(data.usage?.prompt_tokens ?? 0), outputTokens: Number(data.usage?.completion_tokens ?? 0) };
 }
 
@@ -24,13 +40,17 @@ async function completeWithGemini(input: { model: string; messages: ChatMessage[
   const body: Record<string, unknown> = { contents, generationConfig: { temperature: 0.3 } };
   if (system) body.systemInstruction = { parts: [{ text: system }] };
   if (input.tools?.length) body.tools = [{ functionDeclarations: input.tools.map((tool) => ({ name: tool.function.name, description: tool.function.description, parameters: tool.function.parameters })) }];
-  const response = await fetch(`${config.geminiBaseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(config.geminiApiKey)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
-  if (!response.ok) throw new Error(`Gemini provider returned ${response.status}: ${await response.text()}`);
-  const data = await response.json() as any;
+  let response: Response;
+  try {
+    response = await fetch(`${config.geminiBaseUrl.replace(/\/$/, "")}/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(config.geminiApiKey)}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  } catch (error) { throw providerFailure("gemini", error); }
+  if (!response.ok) throw providerFailure("gemini", `HTTP ${response.status}: ${await response.text().catch(() => "response body unavailable")}`);
+  let data: any;
+  try { data = await response.json(); } catch (error) { throw providerFailure("gemini", error); }
   const parts = data.candidates?.[0]?.content?.parts ?? [];
   const content = parts.filter((part: any) => typeof part.text === "string").map((part: any) => part.text).join("\n");
-  const toolCalls = parts.filter((part: any) => part.functionCall?.name).map((part: any, index: number) => ({ id: `gemini_call_${index}`, function: { name: part.functionCall.name, arguments: JSON.stringify(part.functionCall.args ?? {}) } }));
-  if (!content && !toolCalls.length) throw new Error("Gemini provider returned no message.");
+  const toolCalls = parts.filter((part: any) => part.functionCall?.name).map((part: any, index: number) => ({ id: `ai_call_${index}`, function: { name: part.functionCall.name, arguments: JSON.stringify(part.functionCall.args ?? {}) } }));
+  if (!content && !toolCalls.length) throw providerFailure("gemini", "provider returned no message");
   return { content, toolCalls, inputTokens: Number(data.usageMetadata?.promptTokenCount ?? 0), outputTokens: Number(data.usageMetadata?.candidatesTokenCount ?? 0) };
 }
 

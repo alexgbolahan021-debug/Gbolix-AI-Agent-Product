@@ -8,6 +8,8 @@ import type { Agent, EmailCampaign, EmailCampaignRow, EmailReplyEvent, EmailSett
 const GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users/me";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const MAX_BODY = 100_000;
+export const PUBLIC_EMAIL_ERROR = "The agent could not complete this email action. Please try again later.";
+export function publicEmailError(_error: unknown): string { return PUBLIC_EMAIL_ERROR; }
 
 type GmailHeader = { name?: string; value?: string };
 type GmailMessage = { id?: string; threadId?: string; labelIds?: string[]; internalDate?: string; payload?: { headers?: GmailHeader[]; body?: { data?: string }; parts?: unknown[] } };
@@ -147,7 +149,8 @@ export async function runCampaign(store: Store, credits: CreditService, agent: A
       current = await store.updateEmailCampaign(campaign.id, agent.id, agent.workspaceId, { sentRows: current.sentRows + 1 }) ?? current;
     } catch (error) {
       await credits.release(authorization);
-      await store.updateEmailCampaignRow(row.id, campaign.id, { status: "failed", error: error instanceof Error ? error.message : String(error) });
+      console.error("[Gbolix email-campaign] recipient_failed", JSON.stringify({ campaignId: campaign.id, agentId: agent.id, workspaceId: agent.workspaceId, rowId: row.id, error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined }));
+      await store.updateEmailCampaignRow(row.id, campaign.id, { status: "failed", error: PUBLIC_EMAIL_ERROR });
       current = await store.updateEmailCampaign(campaign.id, agent.id, agent.workspaceId, { failedRows: current.failedRows + 1 }) ?? current;
     }
     await new Promise((resolve) => setTimeout(resolve, 350));
@@ -208,7 +211,7 @@ export async function pollAgentReplies(store: Store, credits: CreditService, age
     const aiRequestId = `reply_${event.id}`;
     let authorization;
     try { authorization = await credits.reserve({ requestId: aiRequestId, workspaceId: agent.workspaceId, agentId: agent.id, maximumCredits: 1 }); }
-    catch (error) { await store.updateEmailReplyEvent(event.id, agent.id, { status: "failed", error: error instanceof Error ? error.message : String(error) }); continue; }
+    catch (error) { console.error("[Gbolix email-automation] credit_reservation_failed", JSON.stringify({ agentId: agent.id, workspaceId: agent.workspaceId, eventId: event.id, error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined })); await store.updateEmailReplyEvent(event.id, agent.id, { status: "failed", error: PUBLIC_EMAIL_ERROR }); continue; }
     try {
       const generated = await generateReply(agent, event);
       if (settings.replyMode === "draft") {
@@ -222,7 +225,8 @@ export async function pollAgentReplies(store: Store, credits: CreditService, age
       processed += 1;
     } catch (error) {
       await credits.release(authorization);
-      await store.updateEmailReplyEvent(event.id, agent.id, { status: "failed", error: error instanceof Error ? error.message : String(error) });
+      console.error("[Gbolix email-automation] reply_failed", JSON.stringify({ agentId: agent.id, workspaceId: agent.workspaceId, eventId: event.id, error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined }));
+      await store.updateEmailReplyEvent(event.id, agent.id, { status: "failed", error: PUBLIC_EMAIL_ERROR });
     }
   }
   return processed;
@@ -238,7 +242,7 @@ export async function approveReply(store: Store, credits: CreditService, agent: 
     const sent = await sendGmailTestEmail(connection, { to: event.fromEmail?.match(/<([^>]+)>/)?.[1] ?? event.fromEmail ?? "", subject: `Re: ${(event.subject ?? "").replace(/^Re:\s*/i, "")}`, message: event.replyBody, threadId: event.threadId }, tokenContext(agent, connection, store, requestId));
     await credits.finalize(authorization, { requestId, workspaceId: agent.workspaceId, agentId: agent.id, conversationId: `reply_${event.id}`, credits: 1, model: agent.model, inputTokens: 0, outputTokens: 0, toolCalls: 1 });
     return await store.updateEmailReplyEvent(event.id, agent.id, { status: "sent", replyMessageId: sent.id }) ?? event;
-  } catch (error) { await credits.release(authorization); await store.updateEmailReplyEvent(event.id, agent.id, { status: "failed", error: error instanceof Error ? error.message : String(error) }); throw error; }
+  } catch (error) { await credits.release(authorization); console.error("[Gbolix email-automation] approved_reply_failed", JSON.stringify({ agentId: agent.id, workspaceId: agent.workspaceId, eventId: event.id, error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined })); await store.updateEmailReplyEvent(event.id, agent.id, { status: "failed", error: PUBLIC_EMAIL_ERROR }); throw error; }
 }
 
 export async function pollAllConfiguredAgents(store: Store, credits: CreditService) {
