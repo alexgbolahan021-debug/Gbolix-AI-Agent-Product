@@ -19,6 +19,16 @@ const HUBSPOT_SCOPES = ["crm.objects.contacts.read", "crm.objects.contacts.write
 const GOOGLE_GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"];
 const GOOGLE_CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar.events"];
 
+function oauthLog(stage: string, fields: Record<string, unknown> = {}) {
+  console.info("[Gbolix oauth]", JSON.stringify({ stage, ...fields }));
+}
+
+function oauthError(data: Record<string, unknown>, fallback: string) {
+  if (typeof data.error_description === "string" && data.error_description.trim()) return data.error_description.trim();
+  if (typeof data.error === "string" && data.error.trim()) return data.error.trim();
+  return fallback;
+}
+
 function secretKey() {
   const value = config.connectionEncryptionKey ?? config.agentJwtSecret;
   if (!value) throw new Error("AGENT_CONNECTION_ENCRYPTION_KEY or AGENT_JWT_SECRET must be configured for OAuth connections.");
@@ -64,6 +74,7 @@ export function oauthConfigured(provider: OAuthProvider) {
 
 export function createAuthorizationUrl(provider: OAuthProvider, agentId: string, workspaceId: string, redirectUri: string) {
   const cfg = providerConfig(provider);
+  oauthLog("authorization_url_created", { provider, agentId, workspaceId, redirectUri, scopes: cfg.scopes });
   const state = signState({ agentId, workspaceId, provider, issuedAt: Date.now(), nonce: crypto.randomBytes(24).toString("base64url") });
   const url = new URL(cfg.authorize);
   url.searchParams.set("client_id", cfg.clientId);
@@ -81,10 +92,24 @@ export function createAuthorizationUrl(provider: OAuthProvider, agentId: string,
 
 async function exchangeCode(provider: OAuthProvider, code: string, redirectUri: string): Promise<TokenBundle> {
   const cfg = providerConfig(provider);
-  const response = await fetch(cfg.token, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams({ grant_type: "authorization_code", client_id: cfg.clientId, client_secret: cfg.clientSecret, redirect_uri: redirectUri, code }).toString(), signal: AbortSignal.timeout(10000) });
+  oauthLog("token_exchange_started", { provider, redirectUri });
+  let response: Response;
+  try {
+    response = await fetch(cfg.token, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams({ grant_type: "authorization_code", client_id: cfg.clientId, client_secret: cfg.clientSecret, redirect_uri: redirectUri, code }).toString(), signal: AbortSignal.timeout(10000) });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    oauthLog("token_exchange_network_failed", { provider, error: message });
+    throw new Error(`OAuth token exchange could not reach Google: ${message}`);
+  }
   const data = await response.json().catch(() => ({})) as Record<string, unknown>;
-  if (!response.ok || typeof data.access_token !== "string") throw new Error(typeof data.error_description === "string" ? data.error_description : `OAuth token exchange failed (${response.status}).`);
-  return { accessToken: data.access_token, refreshToken: typeof data.refresh_token === "string" ? data.refresh_token : undefined, expiresAt: typeof data.expires_in === "number" ? Date.now() + data.expires_in * 1000 : undefined, scopes: Array.isArray(data.scope) ? data.scope.filter((item): item is string => typeof item === "string") : typeof data.scope === "string" ? data.scope.split(" ").filter(Boolean) : undefined, accountId: typeof data.hub_id === "number" ? String(data.hub_id) : undefined };
+  if (!response.ok || typeof data.access_token !== "string") {
+    const detail = oauthError(data, `OAuth token exchange failed (HTTP ${response.status})`);
+    oauthLog("token_exchange_rejected", { provider, httpStatus: response.status, error: detail });
+    throw new Error(`OAuth token exchange failed: ${detail}`);
+  }
+  const scopes = Array.isArray(data.scope) ? data.scope.filter((item): item is string => typeof item === "string") : typeof data.scope === "string" ? data.scope.split(" ").filter(Boolean) : undefined;
+  oauthLog("token_exchange_succeeded", { provider, hasRefreshToken: typeof data.refresh_token === "string", expiresInSeconds: data.expires_in, scopes });
+  return { accessToken: data.access_token, refreshToken: typeof data.refresh_token === "string" ? data.refresh_token : undefined, expiresAt: typeof data.expires_in === "number" ? Date.now() + data.expires_in * 1000 : undefined, scopes, accountId: typeof data.hub_id === "number" ? String(data.hub_id) : undefined };
 }
 
 async function identify(provider: OAuthProvider, accessToken: string, token: TokenBundle) {
@@ -94,9 +119,23 @@ async function identify(provider: OAuthProvider, accessToken: string, token: Tok
     return { accountId: typeof data.hub_id === "number" ? String(data.hub_id) : token.accountId, accountEmail: typeof data.user === "string" ? data.user : undefined, scopes: Array.isArray(data.scopes) ? data.scopes.filter((item): item is string => typeof item === "string") : token.scopes };
   }
   if (provider === "google_gmail") {
-    const response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", { headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(8000) });
+    oauthLog("gmail_profile_validation_started");
+    let response: Response;
+    try {
+      response = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/profile", { headers: { authorization: `Bearer ${accessToken}`, accept: "application/json" }, signal: AbortSignal.timeout(8000) });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      oauthLog("gmail_profile_validation_network_failed", { error: message });
+      throw new Error(`Gmail OAuth token could not be validated because Gmail was unreachable: ${message}`);
+    }
     const data = await response.json().catch(() => ({})) as Record<string, unknown>;
-    return { accountId: typeof data.emailAddress === "string" ? data.emailAddress : undefined, accountEmail: typeof data.emailAddress === "string" ? data.emailAddress : undefined, scopes: token.scopes };
+    if (!response.ok || typeof data.emailAddress !== "string") {
+      const detail = oauthError(data, `Gmail profile validation failed (HTTP ${response.status})`);
+      oauthLog("gmail_profile_validation_rejected", { httpStatus: response.status, error: detail });
+      throw new Error(`Gmail OAuth token could not be validated: ${detail}. Please reconnect Gmail.`);
+    }
+    oauthLog("gmail_profile_validation_succeeded", { accountEmail: data.emailAddress, scopes: token.scopes });
+    return { accountId: data.emailAddress, accountEmail: data.emailAddress, scopes: token.scopes };
   }
   const response = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary", { headers: { authorization: `Bearer ${accessToken}` }, signal: AbortSignal.timeout(8000) });
   const data = await response.json().catch(() => ({})) as Record<string, unknown>;
@@ -105,15 +144,18 @@ async function identify(provider: OAuthProvider, accessToken: string, token: Tok
 
 export async function completeOAuth(store: Store, code: string, stateValue: string, redirectUri: string) {
   const state = verifyState(stateValue);
+  oauthLog("callback_state_verified", { provider: state.provider, agentId: state.agentId, workspaceId: state.workspaceId });
   const agent = await store.getAgent(state.agentId);
   if (!agent || agent.workspaceId !== state.workspaceId) throw new Error("The agent associated with this connection no longer exists.");
   if (agent.level < 3) throw new Error("Level 3 is required to connect tools and external systems.");
   const token = await exchangeCode(state.provider, code, redirectUri);
   const identity = await identify(state.provider, token.accessToken, token);
   const bundle: TokenBundle = { ...token, ...identity };
+  oauthLog("connection_credentials_ready", { provider: state.provider, agentId: agent.id, accountId: bundle.accountId, hasRefreshToken: Boolean(bundle.refreshToken), scopes: bundle.scopes });
   const name = state.provider === "hubspot" ? "HubSpot CRM" : state.provider === "google_gmail" ? "Google Gmail" : "Google Calendar";
   const permissions = identity.scopes ?? token.scopes ?? [];
   const connection = await store.createConnection({ agentId: agent.id, workspaceId: state.workspaceId, kind: "native", provider: state.provider, name, authType: "bearer", encryptedSecret: seal(JSON.stringify(bundle)), permissions });
+  oauthLog("connection_saved", { provider: state.provider, agentId: agent.id, connectionId: connection.id, accountId: bundle.accountId, permissionCount: permissions.length });
   await store.addAuditEvent({ actorId: state.workspaceId, workspaceId: state.workspaceId, action: "connection.oauth_complete", targetType: "agent", targetId: agent.id, metadata: { provider: state.provider, accountId: bundle.accountId } });
   return connection;
 }

@@ -12,7 +12,7 @@ import { BUILTIN_TOOLS } from "./tools.js";
 import { createStore, hash } from "./store.js";
 import { callbackPage, completeOAuth, createAuthorizationUrl, oauthConfigured, type OAuthProvider } from "./oauth.js";
 import type { Agent, AgentConnection, ConversationStatus, Identity } from "./types.js";
-import { sendGmailTestEmail } from "./testEmail.js";
+import { encryptGmailCredentials, GmailTestEmailError, sendGmailTestEmail } from "./testEmail.js";
 
 const store = await createStore();
 const credits = new CreditService();
@@ -68,23 +68,65 @@ app.delete("/v1/agents/:agentId/knowledge/:knowledgeId", withIdentity(async (req
 app.post("/v1/agents/:agentId/messages", withIdentity(async (request, response, identity) => { const limit = consumeMessageRateLimit(`${identity.workspaceId}:${identity.subject}`); if (!limit.allowed) { response.setHeader("Retry-After", String(Math.ceil(limit.retryAfterMs / 1000))); return response.status(429).json({ error: "Too many agent requests. Please retry shortly.", code: "RATE_LIMITED" }); } try { return response.json(await runtime.run(String(request.params.agentId), identity, request.body)); } catch (error) { if (error instanceof CreditError && error.code === "INSUFFICIENT_CREDITS") return response.status(402).json({ error: error.message, code: error.code }); throw error; } }, { allowPublicDeployment: true }));
 
 app.post("/v1/agents/:agentId/test-email", withIdentity(async (request, response, identity) => {
-  const agent = await store.getAgent(String(request.params.agentId));
-  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
-  if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required to send test emails.", code: "LEVEL_REQUIRED", level: 3 });
-  const body = request.body as Record<string, unknown>;
-  const to = typeof body.to === "string" ? body.to.trim() : "";
-  const subject = typeof body.subject === "string" ? body.subject.trim() : "";
-  const message = typeof body.message === "string" ? body.message.trim() : "";
-  if (!to || !subject || !message) return response.status(400).json({ error: "to, subject, and message are required" });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return response.status(400).json({ error: "A valid recipient email address is required" });
-  const connections = await store.listConnections(agent.id, identity.workspaceId);
-  const gmail = connections.find((item) => item.provider === "google_gmail" && item.status === "connected");
-  if (!gmail) return response.status(409).json({ error: "Connect Google Gmail in Tools & Connections before sending a test email.", code: "GMAIL_NOT_CONNECTED" });
-  const connection = await store.getConnection(gmail.id, agent.id, identity.workspaceId);
-  if (!connection) return response.status(409).json({ error: "The Gmail connection could not be loaded. Please reconnect Gmail.", code: "GMAIL_CONNECTION_UNAVAILABLE" });
-  const sent = await sendGmailTestEmail(connection, { to, subject, message });
-  await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "agent.test_email", targetType: "agent", targetId: agent.id, metadata: { recipient: to, subject, provider: "google_gmail", messageId: sent.id } });
-  return response.json({ success: true, messageId: sent.id, threadId: sent.threadId, from: sent.from });
+  const requestId = String(response.getHeader("x-request-id") ?? `test_email_${crypto.randomBytes(8).toString("hex")}`);
+  const agentId = String(request.params.agentId);
+  const log = (stage: string, fields: Record<string, unknown> = {}) => console.info("[Gbolix test-email]", JSON.stringify({ requestId, stage, agentId, workspaceId: identity.workspaceId, ...fields }));
+  log("request_received", { authType: identity.authType });
+  try {
+    const agent = await store.getAgent(agentId);
+    log("agent_loaded", { found: Boolean(agent), level: agent?.level, status: agent?.status });
+    if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found", message: "Agent not found", code: "AGENT_NOT_FOUND", requestId });
+    if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required to send test emails.", message: "Level 3 is required to send test emails.", code: "LEVEL_REQUIRED", level: 3, requestId });
+    const body = request.body as Record<string, unknown>;
+    const to = typeof body.to === "string" ? body.to.trim() : "";
+    const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+    const message = typeof body.message === "string" ? body.message.trim() : "";
+    log("request_validating", { hasRecipient: Boolean(to), hasSubject: Boolean(subject), messageLength: message.length });
+    if (!to || !subject || !message) return response.status(400).json({ error: "to, subject, and message are required", message: "to, subject, and message are required", code: "TEST_EMAIL_FIELDS_REQUIRED", requestId });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return response.status(400).json({ error: "A valid recipient email address is required", message: "A valid recipient email address is required", code: "INVALID_RECIPIENT", requestId });
+    if (subject.length > 998 || message.length > 100000) return response.status(400).json({ error: "Email subject or message is too long.", message: "Email subject or message is too long.", code: "TEST_EMAIL_TOO_LONG", requestId });
+    if (/[\r\n]/.test(to) || /[\r\n]/.test(subject)) return response.status(400).json({ error: "Email headers contain invalid characters.", message: "Email headers contain invalid characters.", code: "INVALID_EMAIL_HEADERS", requestId });
+
+    const connections = await store.listConnections(agent.id, identity.workspaceId);
+    const gmailCandidates = connections.filter((item) => item.provider === "google_gmail");
+    log("connections_loaded", { total: connections.length, gmailCandidates: gmailCandidates.length, connectedGmailCandidates: gmailCandidates.filter((item) => item.status === "connected").length });
+    const gmail = gmailCandidates.find((item) => item.status === "connected");
+    if (!gmail) {
+      const error = gmailCandidates.length ? "Gmail is not connected for this agent. Reconnect Google Gmail in Tools & Connections before sending a test email." : "Gmail is not connected for this agent. Connect Google Gmail in Tools & Connections before sending a test email.";
+      log("gmail_connection_missing", { candidateStatuses: gmailCandidates.map((item) => item.status) });
+      return response.status(409).json({ error, message: error, code: "GMAIL_NOT_CONNECTED", requestId });
+    }
+
+    const connection = await store.getConnection(gmail.id, agent.id, identity.workspaceId);
+    log("connection_loaded", { connectionId: gmail.id, found: Boolean(connection), hasEncryptedSecret: Boolean(connection?.encryptedSecret), permissionCount: connection?.permissions.length ?? 0 });
+    if (!connection) {
+      const error = "The Gmail connection could not be loaded for this agent. Please reconnect Gmail.";
+      return response.status(409).json({ error, message: error, code: "GMAIL_CONNECTION_UNAVAILABLE", requestId });
+    }
+
+    const sent = await sendGmailTestEmail(connection, { to, subject, message }, {
+      requestId,
+      agentId: agent.id,
+      workspaceId: identity.workspaceId,
+      onTokenRefreshed: async (bundle) => {
+        log("persisting_refreshed_credentials", { connectionId: connection.id, expiresAt: bundle.expiresAt });
+        const updated = await store.updateConnectionSecret(connection.id, agent.id, identity.workspaceId, encryptGmailCredentials(bundle));
+        if (!updated) throw new Error("The Gmail connection no longer exists.");
+      },
+    });
+    log("email_send_completed", { connectionId: connection.id, messageId: sent.id, threadId: sent.threadId });
+    await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "agent.test_email", targetType: "agent", targetId: agent.id, metadata: { recipient: to, subject, provider: "google_gmail", messageId: sent.id, requestId } });
+    log("audit_recorded", { connectionId: connection.id });
+    return response.json({ success: true, messageId: sent.id, threadId: sent.threadId, from: sent.from, requestId });
+  } catch (error) {
+    if (error instanceof GmailTestEmailError) {
+      console.error("[Gbolix test-email] request_failed", JSON.stringify({ requestId, agentId, workspaceId: identity.workspaceId, stage: error.stage, code: error.code, status: error.status, error: error.message }));
+      return response.status(error.status).json({ error: error.message, message: error.message, code: error.code, stage: error.stage, requestId });
+    }
+    const message = error instanceof Error ? error.message : "Unexpected Gmail test email failure.";
+    console.error("[Gbolix test-email] request_failed", JSON.stringify({ requestId, agentId, workspaceId: identity.workspaceId, stage: "unexpected", error: message, stack: error instanceof Error ? error.stack : undefined }));
+    return response.status(500).json({ error: message, message, code: "GMAIL_TEST_EMAIL_UNEXPECTED_ERROR", stage: "unexpected", requestId });
+  }
 }));
 app.get("/v1/agents/:agentId/conversations", withIdentity(async (request, response, identity) => response.json(await store.listConversations(String(request.params.agentId), identity.workspaceId))));
 app.get("/v1/conversations/:conversationId", withIdentity(async (request, response, identity) => { const conversation = await store.getConversation(String(request.params.conversationId), identity.workspaceId); if (!conversation) return response.status(404).json({ error: "Conversation not found" }); return response.json({ conversation, messages: await store.listMessages(conversation.id) }); }));
@@ -149,7 +191,7 @@ app.get("/v1/admin/settings", withIdentity(async (_request, response) => respons
 app.post("/v1/internal/credit-authorizations", (request, response, next) => { try { resolveInternalIdentity({ headers: request.headers }); return next(); } catch (error) { return next(error); } }, (_request, response) => response.status(501).json({ error: "The platform credit authorization endpoint is owned by Gbolix.site." }));
 app.post("/v1/internal/usage-events", (request, response, next) => { try { resolveInternalIdentity({ headers: request.headers }); return next(); } catch (error) { return next(error); } }, (_request, response) => response.status(501).json({ error: "The platform usage event endpoint is owned by Gbolix.site." }));
 
-app.use((error: unknown, _request: Request, response: Response, _next: NextFunction) => { const message = error instanceof Error ? error.message : "Unexpected server error"; const status = /authentication|origin|admin access/i.test(message) ? 401 : 500; response.status(status).json({ error: message }); });
+app.use((error: unknown, request: Request, response: Response, _next: NextFunction) => { const message = error instanceof Error ? error.message : "Unexpected server error"; const status = /authentication|origin|admin access/i.test(message) ? 401 : 500; const requestId = response.getHeader("x-request-id") ?? `http_${crypto.randomBytes(8).toString("hex")}`; console.error("[Gbolix request] unhandled_error", JSON.stringify({ requestId, method: request.method, path: request.path, status, error: message, stack: error instanceof Error ? error.stack : undefined })); response.status(status).json({ error: message, message, code: "REQUEST_FAILED", requestId }); });
 
 async function verifyPaidLevelEntitlement(identity: Identity, requestedLevel: number): Promise<{ allowed: boolean; currentLevel: number; status?: string }> {
   if (requestedLevel <= 1) return { allowed: true, currentLevel: 1, status: "free" };

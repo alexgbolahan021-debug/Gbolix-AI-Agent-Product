@@ -163,6 +163,7 @@ export type Store = {
   createConnection(input: { agentId: string; workspaceId: string; kind: AgentConnection["kind"]; provider: string; name: string; endpoint?: string; method?: AgentConnection["method"]; authType?: AgentConnection["authType"]; encryptedSecret?: string; headers?: Record<string, string>; parameters?: Record<string, string>; permissions: string[] }): Promise<AgentConnection>;
   listConnections(agentId: string, workspaceId: string): Promise<AgentConnection[]>;
   getConnection(id: string, agentId: string, workspaceId: string): Promise<StoredAgentConnection | undefined>;
+  updateConnectionSecret(id: string, agentId: string, workspaceId: string, encryptedSecret: string): Promise<boolean>;
   deleteConnection(id: string, agentId: string, workspaceId: string): Promise<boolean>;
   addUsageEvent(event: UsageEvent): Promise<UsageEvent>;
   listUsage(agentId: string, workspaceId: string, limit: number): Promise<UsageEvent[]>;

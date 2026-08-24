@@ -39,6 +39,12 @@ services:
         sync: false
       - key: AGENT_JWT_SECRET
         sync: false
+      - key: AGENT_CONNECTION_ENCRYPTION_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
       - key: CLERK_SECRET_KEY
         sync: false
       - key: CLERK_JWKS_URL
