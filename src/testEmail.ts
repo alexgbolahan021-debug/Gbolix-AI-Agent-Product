@@ -3,8 +3,9 @@ import type { AgentConnection } from "./types.js";
 import { config } from "./config.js";
 
 function decryptSecret(value: string): string {
-  if (!config.connectionEncryptionKey) throw new Error("AGENT_CONNECTION_ENCRYPTION_KEY is required to use encrypted connections.");
-  const key = crypto.createHash("sha256").update(config.connectionEncryptionKey).digest();
+  const encryptionSecret = config.connectionEncryptionKey ?? config.agentJwtSecret;
+  if (!encryptionSecret) throw new Error("AGENT_CONNECTION_ENCRYPTION_KEY or AGENT_JWT_SECRET is required to use encrypted connections.");
+  const key = crypto.createHash("sha256").update(encryptionSecret).digest();
   const [version, ivText, tagText, ciphertextText] = value.split(":");
   if (version !== "v1" || !ivText || !tagText || !ciphertextText) throw new Error("Invalid encrypted connection secret.");
   const iv = Buffer.from(ivText, "base64url");
