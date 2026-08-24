@@ -12,6 +12,7 @@ import { BUILTIN_TOOLS } from "./tools.js";
 import { createStore, hash } from "./store.js";
 import { callbackPage, completeOAuth, createAuthorizationUrl, oauthConfigured, type OAuthProvider } from "./oauth.js";
 import type { Agent, AgentConnection, ConversationStatus, Identity } from "./types.js";
+import { sendGmailTestEmail } from "./testEmail.js";
 
 const store = await createStore();
 const credits = new CreditService();
@@ -65,6 +66,26 @@ app.post("/v1/agents/:agentId/knowledge/import-url", withIdentity(async (request
 app.delete("/v1/agents/:agentId/knowledge/:knowledgeId", withIdentity(async (request, response, identity) => { const removed = await store.deleteKnowledge(String(request.params.knowledgeId), String(request.params.agentId), identity.workspaceId); return removed ? response.status(204).send() : response.status(404).json({ error: "Knowledge source not found" }); }));
 
 app.post("/v1/agents/:agentId/messages", withIdentity(async (request, response, identity) => { const limit = consumeMessageRateLimit(`${identity.workspaceId}:${identity.subject}`); if (!limit.allowed) { response.setHeader("Retry-After", String(Math.ceil(limit.retryAfterMs / 1000))); return response.status(429).json({ error: "Too many agent requests. Please retry shortly.", code: "RATE_LIMITED" }); } try { return response.json(await runtime.run(String(request.params.agentId), identity, request.body)); } catch (error) { if (error instanceof CreditError && error.code === "INSUFFICIENT_CREDITS") return response.status(402).json({ error: error.message, code: error.code }); throw error; } }, { allowPublicDeployment: true }));
+
+app.post("/v1/agents/:agentId/test-email", withIdentity(async (request, response, identity) => {
+  const agent = await store.getAgent(String(request.params.agentId));
+  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
+  if (agent.level < 3) return response.status(402).json({ error: "Level 3 is required to send test emails.", code: "LEVEL_REQUIRED", level: 3 });
+  const body = request.body as Record<string, unknown>;
+  const to = typeof body.to === "string" ? body.to.trim() : "";
+  const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (!to || !subject || !message) return response.status(400).json({ error: "to, subject, and message are required" });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) return response.status(400).json({ error: "A valid recipient email address is required" });
+  const connections = await store.listConnections(agent.id, identity.workspaceId);
+  const gmail = connections.find((item) => item.provider === "google_gmail" && item.status === "connected");
+  if (!gmail) return response.status(409).json({ error: "Connect Google Gmail in Tools & Connections before sending a test email.", code: "GMAIL_NOT_CONNECTED" });
+  const connection = await store.getConnection(gmail.id, agent.id, identity.workspaceId);
+  if (!connection) return response.status(409).json({ error: "The Gmail connection could not be loaded. Please reconnect Gmail.", code: "GMAIL_CONNECTION_UNAVAILABLE" });
+  const sent = await sendGmailTestEmail(connection, { to, subject, message });
+  await store.addAuditEvent({ actorId: identity.subject, workspaceId: agent.workspaceId, action: "agent.test_email", targetType: "agent", targetId: agent.id, metadata: { recipient: to, subject, provider: "google_gmail", messageId: sent.id } });
+  return response.json({ success: true, messageId: sent.id, threadId: sent.threadId, from: sent.from });
+}));
 app.get("/v1/agents/:agentId/conversations", withIdentity(async (request, response, identity) => response.json(await store.listConversations(String(request.params.agentId), identity.workspaceId))));
 app.get("/v1/conversations/:conversationId", withIdentity(async (request, response, identity) => { const conversation = await store.getConversation(String(request.params.conversationId), identity.workspaceId); if (!conversation) return response.status(404).json({ error: "Conversation not found" }); return response.json({ conversation, messages: await store.listMessages(conversation.id) }); }));
 app.patch("/v1/conversations/:conversationId", withIdentity(async (request, response, identity) => { const conversation = await store.getConversation(String(request.params.conversationId), identity.workspaceId); if (!conversation) return response.status(404).json({ error: "Conversation not found" }); const status = String((request.body as Record<string, unknown>)?.status ?? ""); if (!["open", "resolved", "handoff"].includes(status)) return response.status(400).json({ error: "status must be open, resolved, or handoff" }); await store.touchConversation(conversation.id, status as ConversationStatus); const updated = await store.getConversation(conversation.id, identity.workspaceId); return response.json(updated); }));
