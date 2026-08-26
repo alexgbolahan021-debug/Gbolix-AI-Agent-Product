@@ -137,6 +137,18 @@ app.patch("/v1/conversations/:conversationId", withIdentity(async (request, resp
 
 app.post("/v1/agents/:agentId/deployments", withIdentity(async (request, response, identity) => { const agent = await store.getAgent(String(request.params.agentId)); if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" }); const body = request.body as any; const allowedOrigin = typeof body.allowedOrigin === "string" ? normalizeOrigin(body.allowedOrigin) : undefined; if (body.allowedOrigin && !allowedOrigin) return response.status(400).json({ error: "allowedOrigin must be a valid website origin such as https://example.com" }); const deployment = await store.createDeployment({ agentId: agent.id, workspaceId: identity.workspaceId, channel: "website", allowedOrigin, tokenPrefix: "", status: "active" }); const shareableLink = `${publicBaseUrl(request)}/widget?agent=${encodeURIComponent(agent.id)}&token=${encodeURIComponent(deployment.plaintextToken ?? "")}`; return response.status(201).json({ deployment, shareableLink, embedCode: `<script src="${publicBaseUrl(request)}/widget.js" data-gbolix-agent="${agent.id}" data-gbolix-token="${deployment.plaintextToken}" async></script>` }); }));
 app.get("/v1/agents/:agentId/deployments", withIdentity(async (request, response, identity) => response.json(await store.listDeployments(String(request.params.agentId), identity.workspaceId))));
+app.get("/v1/agents/:agentId/deployments/:deploymentId/artifacts", withIdentity(async (request, response, identity) => {
+  const agentId = String(request.params.agentId);
+  const deploymentId = String(request.params.deploymentId);
+  const agent = await store.getAgent(agentId);
+  if (!agent || agent.workspaceId !== identity.workspaceId) return response.status(404).json({ error: "Agent not found" });
+  const artifact = await store.getDeploymentArtifact(deploymentId, agentId, identity.workspaceId);
+  if (!artifact) return response.status(404).json({ error: "Active deployment not found" });
+  const baseUrl = publicBaseUrl(request);
+  const shareableLink = `${baseUrl}/widget?agent=${encodeURIComponent(agentId)}&token=${encodeURIComponent(artifact.plaintextToken)}`;
+  response.setHeader("Cache-Control", "no-store");
+  return response.json({ deployment: artifact.deployment, shareableLink, embedCode: `<script src="${baseUrl}/widget.js" data-gbolix-agent="${agentId}" data-gbolix-token="${artifact.plaintextToken}" async></script>` });
+}));
 app.delete("/v1/agents/:agentId/deployments/:deploymentId", withIdentity(async (request, response, identity) => { const removed = await store.revokeDeployment(String(request.params.deploymentId), String(request.params.agentId), identity.workspaceId); return removed ? response.status(204).send() : response.status(404).json({ error: "Deployment not found" }); }));
 
 app.get("/v1/agents/:agentId/connections/oauth/:provider/start", withIdentity(async (request, response, identity) => {

@@ -170,6 +170,7 @@ export type Store = {
   addMessage(input: Omit<Message, "id" | "createdAt">): Promise<Message>;
   createDeployment(input: Omit<Deployment, "id" | "createdAt" | "updatedAt">): Promise<Deployment & { plaintextToken?: string }>;
   listDeployments(agentId: string, workspaceId: string): Promise<Deployment[]>;
+  getDeploymentArtifact(deploymentId: string, agentId: string, workspaceId: string): Promise<{ deployment: Deployment; plaintextToken: string } | undefined>;
   getDeploymentByToken(token: string): Promise<{ deployment: Deployment; agent: Agent } | undefined>;
   revokeDeployment(id: string, agentId: string, workspaceId: string): Promise<boolean>;
   createApiKey(input: Omit<ApiKeyRecord, "id" | "createdAt">): Promise<ApiKeyRecord>;
