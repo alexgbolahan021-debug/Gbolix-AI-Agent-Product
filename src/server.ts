@@ -192,7 +192,7 @@ app.post("/v1/admin/ai/providers", withIdentity(async (request, response, identi
   const input = await parseAdminProviderInput(request.body as Record<string, unknown>);
   if (!input.ok) return response.status(input.status).json({ error: input.error, code: "AI_PROVIDER_INVALID" });
   if (await store.getAiProvider(input.value.id)) return response.status(409).json({ error: "A provider with this identifier already exists.", code: "AI_PROVIDER_EXISTS" });
-  const provider = await store.upsertAiProvider({ id: input.value.id, name: input.value.name, adapter: input.value.adapter, baseUrl: input.value.baseUrl, defaultModel: input.value.defaultModel, priority: input.value.priority, enabled: input.value.enabled, encryptedApiKey: encryptProviderApiKey(input.value.apiKey) });
+  const provider = await store.upsertAiProvider({ ...input.value, encryptedApiKey: encryptProviderApiKey(input.value.apiKey) });
   clearProviderModelCache(provider.id);
   await store.addAuditEvent({ actorId: identity.subject, workspaceId: identity.workspaceId, action: "ai.provider.create", targetType: "ai_provider", targetId: provider.id, metadata: { adapter: provider.adapter, enabled: provider.enabled, priority: provider.priority } });
   return response.status(201).json(provider);
@@ -203,7 +203,7 @@ app.patch("/v1/admin/ai/providers/:providerId", withIdentity(async (request, res
   if (!current) return response.status(404).json({ error: "AI provider not found.", code: "AI_PROVIDER_NOT_FOUND" });
   const input = await parseAdminProviderInput(request.body as Record<string, unknown>, providerId, current);
   if (!input.ok) return response.status(input.status).json({ error: input.error, code: "AI_PROVIDER_INVALID" });
-  const updated = await store.upsertAiProvider({ id: input.value.id, name: input.value.name, adapter: input.value.adapter, baseUrl: input.value.baseUrl, defaultModel: input.value.defaultModel, priority: input.value.priority, enabled: input.value.enabled, encryptedApiKey: input.value.apiKey ? encryptProviderApiKey(input.value.apiKey) : undefined });
+  const updated = await store.upsertAiProvider({ ...input.value, encryptedApiKey: input.value.apiKey ? encryptProviderApiKey(input.value.apiKey) : undefined });
   clearProviderModelCache(updated.id);
   await store.addAuditEvent({ actorId: identity.subject, workspaceId: identity.workspaceId, action: "ai.provider.update", targetType: "ai_provider", targetId: updated.id, metadata: { adapter: updated.adapter, enabled: updated.enabled, priority: updated.priority, apiKeyRotated: Boolean(input.value.apiKey) } });
   return response.json(updated);
@@ -325,7 +325,7 @@ function safeStringMap(value: unknown): Record<string, string> { if (!value || t
 function sealSecret(value: string): string { if (!config.connectionEncryptionKey) throw new Error("AGENT_CONNECTION_ENCRYPTION_KEY is required before storing connection secrets."); const key = crypto.createHash("sha256").update(config.connectionEncryptionKey).digest(); const iv = crypto.randomBytes(12); const cipher = crypto.createCipheriv("aes-256-gcm", key, iv); const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]); const tag = cipher.getAuthTag(); return `v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`; }
 function bearerToken(request: Request) { const value = request.header("authorization"); return value?.startsWith("Bearer ") ? value.slice(7) : undefined; }
 function allowCors(request: Request, response: Response, next: NextFunction, origin?: string) { if (origin) { response.setHeader("Access-Control-Allow-Origin", origin); response.setHeader("Vary", "Origin"); response.setHeader("Access-Control-Allow-Headers", "content-type,authorization,x-request-id"); response.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS"); } if (request.method === "OPTIONS") return response.status(204).end(); return next(); }
-async function parseAdminProviderInput(body: Record<string, unknown>, forcedId?: string, current?: { id: string; name: string; adapter: AiProviderAdapter; baseUrl: string; defaultModel: string; priority: number; enabled: boolean }): Promise<{ ok: true; value: { id: string; name: string; adapter: AiProviderAdapter; baseUrl: string; apiKey: string; defaultModel: string; priority: number; enabled: boolean } } | { ok: false; status: number; error: string }> {
+async function parseAdminProviderInput(body: Record<string, unknown>, forcedId?: string, current?: { id: string; name: string; adapter: AiProviderAdapter; baseUrl: string; defaultModel: string; priority: number; enabled: boolean; trafficWeight?: number; fallbackEnabled?: boolean; capacityMode?: "auto" | "manual"; rpmLimit?: number; tpmLimit?: number; rpdLimit?: number; safetyMargin?: number }): Promise<{ ok: true; value: { id: string; name: string; adapter: AiProviderAdapter; baseUrl: string; apiKey: string; defaultModel: string; priority: number; enabled: boolean; trafficWeight: number; fallbackEnabled: boolean; capacityMode: "auto" | "manual"; rpmLimit?: number; tpmLimit?: number; rpdLimit?: number; safetyMargin: number } } | { ok: false; status: number; error: string }> {
   const idValue = forcedId ?? (typeof body.id === "string" ? body.id.trim().toLowerCase() : "");
   if (!/^[a-z0-9](?:[a-z0-9_-]{0,62})$/.test(idValue)) return { ok: false, status: 400, error: "id must be 1-63 characters using lowercase letters, numbers, hyphens, or underscores." };
   const name = typeof body.name === "string" ? body.name.trim().slice(0, 120) : current?.name ?? "";
@@ -341,9 +341,16 @@ async function parseAdminProviderInput(body: Record<string, unknown>, forcedId?:
   if (secret.length > 4096) return { ok: false, status: 413, error: "The provider API key is too long." };
   if (!current && !secret) return { ok: false, status: 400, error: "apiKey is required when adding a provider." };
   const defaultModel = typeof body.defaultModel === "string" ? body.defaultModel.trim().slice(0, 160) : current?.defaultModel ?? "";
-  const numericPriority = body.priority === undefined ? current?.priority ?? 100 : Number(body.priority);
+  const numericPriority = (body.priority === undefined ? current?.priority ?? 100 : Number(body.priority)) ?? 100;
   if (!Number.isInteger(numericPriority) || numericPriority < 0 || numericPriority > 100000) return { ok: false, status: 400, error: "priority must be an integer from 0 to 100000." };
-  return { ok: true, value: { id: idValue, name, adapter, baseUrl: baseUrl.toString().replace(/\/$/, ""), apiKey: secret, defaultModel, priority: numericPriority, enabled: body.enabled === undefined ? current?.enabled ?? true : body.enabled !== false } };
+  const integerOptional = (key: string, fallback?: number) => body[key] === undefined || body[key] === "" ? fallback : Number(body[key]);
+  const trafficWeight = integerOptional("trafficWeight", current?.trafficWeight ?? 100) ?? 100; const safetyMargin = integerOptional("safetyMargin", current?.safetyMargin ?? 20) ?? 20;
+  if (!Number.isInteger(trafficWeight) || trafficWeight < 1 || trafficWeight > 100000) return { ok: false, status: 400, error: "trafficWeight must be an integer from 1 to 100000." };
+  if (!Number.isInteger(safetyMargin) || safetyMargin < 0 || safetyMargin > 90) return { ok: false, status: 400, error: "safetyMargin must be an integer from 0 to 90." };
+  const capacityMode = body.capacityMode === "manual" || body.capacityMode === "auto" ? body.capacityMode : current?.capacityMode ?? "auto";
+  const rpmLimit = integerOptional("rpmLimit", current?.rpmLimit); const tpmLimit = integerOptional("tpmLimit", current?.tpmLimit); const rpdLimit = integerOptional("rpdLimit", current?.rpdLimit);
+  if ([rpmLimit, tpmLimit, rpdLimit].some((value) => value !== undefined && (!Number.isInteger(value) || value < 1))) return { ok: false, status: 400, error: "capacity limits must be positive integers when provided." };
+  return { ok: true, value: { id: idValue, name, adapter, baseUrl: baseUrl.toString().replace(/\/$/, ""), apiKey: secret, defaultModel, priority: numericPriority, enabled: body.enabled === undefined ? current?.enabled ?? true : body.enabled !== false, trafficWeight, fallbackEnabled: body.fallbackEnabled === undefined ? current?.fallbackEnabled ?? true : body.fallbackEnabled !== false, capacityMode, rpmLimit, tpmLimit, rpdLimit, safetyMargin } };
 }
 async function safeKnowledgeUrl(raw: string) { try { const target = new URL(raw); if (!['http:', 'https:'].includes(target.protocol) || target.username || target.password || target.pathname.length > 2048 || target.toString().length > 4096 || isPrivateHostname(target.hostname)) return undefined; const addresses = await lookup(target.hostname, { all: true }); if (!addresses.length || addresses.some((entry) => isPrivateIp(entry.address))) return undefined; return target; } catch { return undefined; } }
 function isPrivateHostname(hostname: string) { const normalized = hostname.toLowerCase(); return normalized === "localhost" || normalized.endsWith(".local") || normalized.endsWith(".internal") || normalized === "metadata.google.internal"; }

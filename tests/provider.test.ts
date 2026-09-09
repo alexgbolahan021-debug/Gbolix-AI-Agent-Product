@@ -103,3 +103,31 @@ test("an admin-ordered provider registry fails over to the next live provider wi
     assert.equal(calls.some((url) => url.includes("secondary.example.com/v1/chat/completions")), true);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+
+test("records rate-limit telemetry and Retry-After while falling back after releasing capacity", async () => {
+  const originalFetch = globalThis.fetch;
+  const attempts: Array<Record<string, unknown>> = [];
+  const reservations: string[] = [];
+  globalThis.fetch = (async (input) => {
+    const url = String(input);
+    if (url.includes("primary.example.com")) return new Response(JSON.stringify({ error: "rate limit exceeded" }), { status: 429, headers: { "retry-after": "2" } });
+    return openAiSuccess();
+  }) as typeof fetch;
+  const store = {
+    reserveAiProviderCapacity: async ({ providerId }: { providerId: string }) => { const id = `reservation_${providerId}`; reservations.push(id); return { id, providerId, requestId: id, estimatedTokens: 100, status: "reserved" as const, expiresAt: new Date(Date.now() + 10000).toISOString(), createdAt: new Date().toISOString() }; },
+    finalizeAiProviderReservation: async (id: string, status: "released" | "committed") => { attempts.push({ id, status }); return undefined; },
+    recordAiProviderAttempt: async (attempt: Record<string, unknown>) => { attempts.push(attempt); },
+  };
+  try {
+    const result = await complete({ model: "primary-live", requestId: "phase-d-retry-after", settings: { agentId: "a", workspaceId: "w", providerOrder: ["primary", "secondary"], models: {}, fallbackEnabled: true, autoUpdateModels: false, updatedAt: new Date().toISOString() }, store, messages: [{ role: "user", content: "Reply" }], providers: [
+      { id: "primary", name: "Primary", adapter: "openai_compatible", baseUrl: "https://primary.example.com/v1", apiKey: "one", defaultModel: "primary-live", priority: 1, enabled: true, trafficWeight: 100000, fallbackEnabled: true, capacityMode: "auto", safetyMargin: 20, healthStatus: "unknown" },
+      { id: "secondary", name: "Secondary", adapter: "openai_compatible", baseUrl: "https://secondary.example.com/v1", apiKey: "two", defaultModel: "secondary-live", priority: 2, enabled: true, trafficWeight: 1, fallbackEnabled: true, capacityMode: "auto", safetyMargin: 20, healthStatus: "unknown" },
+    ] });
+    assert.equal(result.provider, "secondary");
+    assert.equal(reservations.length, 2);
+    assert.equal(attempts.some((item) => item.status === "released"), true);
+    assert.equal(attempts.some((item) => item.success === false && item.rateLimited === true && item.retryAfterMs === 2000), true);
+    assert.equal(attempts.some((item) => item.success === true && item.providerId === "secondary"), true);
+  } finally { globalThis.fetch = originalFetch; }
+});

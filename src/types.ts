@@ -102,12 +102,16 @@ export type EmailCampaignRow = { id: string; campaignId: string; rowNumber: numb
 export type EmailReplyEvent = { id: string; agentId: string; workspaceId: string; gmailMessageId: string; threadId: string; fromEmail?: string; subject?: string; receivedAt?: string; body: string; status: "pending" | "sent" | "ignored" | "failed"; replyBody?: string; replyMessageId?: string; error?: string; createdAt: string; updatedAt: string };
 export type AiProviderId = string;
 export type AiProviderAdapter = "gemini" | "openai_compatible";
-export type AiProvider = { id: AiProviderId; name: string; adapter: AiProviderAdapter; baseUrl: string; apiKeyConfigured: boolean; defaultModel: string; priority: number; enabled: boolean; createdAt: string; updatedAt: string };
+export type AiProviderHealthStatus = "healthy" | "at_risk" | "full" | "cooldown" | "unknown";
+export type AiProviderCapacityMode = "auto" | "manual";
+export type AiProvider = { id: AiProviderId; name: string; adapter: AiProviderAdapter; baseUrl: string; apiKeyConfigured: boolean; defaultModel: string; priority: number; enabled: boolean; trafficWeight?: number; fallbackEnabled?: boolean; capacityMode?: AiProviderCapacityMode; rpmLimit?: number; tpmLimit?: number; rpdLimit?: number; safetyMargin?: number; currentRpm?: number; currentTpm?: number; currentRpd?: number; cooldownUntil?: string; healthStatus?: AiProviderHealthStatus; createdAt: string; updatedAt: string };
 export type StoredAiProvider = AiProvider & { encryptedApiKey?: string };
-export type AiProviderRuntime = { id: AiProviderId; name: string; adapter: AiProviderAdapter; baseUrl: string; apiKey: string; defaultModel: string; priority: number; enabled: boolean };
+export type AiProviderRuntime = Pick<AiProvider, "id" | "name" | "adapter" | "baseUrl" | "defaultModel" | "priority" | "enabled" | "trafficWeight" | "fallbackEnabled" | "capacityMode" | "rpmLimit" | "tpmLimit" | "rpdLimit" | "safetyMargin" | "cooldownUntil" | "healthStatus"> & { apiKey: string };
 export type AiProviderSettings = { agentId: string; workspaceId: string; providerOrder: AiProviderId[]; models: Partial<Record<AiProviderId, string>>; fallbackEnabled: boolean; autoUpdateModels: boolean; updatedAt: string };
 export type AiModelInfo = { id: string; displayName?: string; live: boolean; deprecated?: boolean };
 export type AiProviderCatalog = { provider: AiProviderId; name?: string; adapter?: AiProviderAdapter; configured: boolean; available: boolean; models: AiModelInfo[]; checkedAt: string; error?: string };
+export type AiProviderReservation = { id: string; providerId: AiProviderId; requestId: string; estimatedTokens: number; status: "reserved" | "released" | "committed"; expiresAt: string; createdAt: string };
+export type AiProviderAttempt = { providerId: AiProviderId; model: string; requestId?: string; inputTokens: number; outputTokens: number; latencyMs: number; success: boolean; httpStatus?: number; rateLimited?: boolean; quotaError?: boolean; retryAfterMs?: number; errorCode?: string };
 
 export type ApiKeyRecord = {
   id: string;
@@ -188,7 +192,10 @@ export type Store = {
   listAiProviders(): Promise<AiProvider[]>;
   listAiProviderSecrets(): Promise<StoredAiProvider[]>;
   getAiProvider(providerId: string): Promise<StoredAiProvider | undefined>;
-  upsertAiProvider(input: { id: string; name: string; adapter: AiProviderAdapter; baseUrl: string; encryptedApiKey?: string; defaultModel: string; priority: number; enabled: boolean }): Promise<AiProvider>;
+  upsertAiProvider(input: { id: string; name: string; adapter: AiProviderAdapter; baseUrl: string; encryptedApiKey?: string; defaultModel: string; priority: number; enabled: boolean; trafficWeight?: number; fallbackEnabled?: boolean; capacityMode?: AiProviderCapacityMode; rpmLimit?: number; tpmLimit?: number; rpdLimit?: number; safetyMargin?: number }): Promise<AiProvider>;
+  reserveAiProviderCapacity(input: { providerId: AiProviderId; requestId: string; estimatedTokens: number; ttlSeconds?: number }): Promise<AiProviderReservation | undefined>;
+  finalizeAiProviderReservation(reservationId: string, status: "released" | "committed", actualTokens?: number): Promise<AiProviderReservation | undefined>;
+  recordAiProviderAttempt(attempt: AiProviderAttempt): Promise<void>;
   deleteAiProvider(providerId: string): Promise<boolean>;
   getEmailSettings(agentId: string, workspaceId: string): Promise<EmailSettings | undefined>;
   upsertEmailSettings(input: Omit<EmailSettings, "updatedAt">): Promise<EmailSettings>;

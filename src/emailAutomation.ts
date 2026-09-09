@@ -180,8 +180,8 @@ function matchesQuery(message: GmailMessage, query: string): boolean {
   return query.toLowerCase().split(/\s+/).filter(Boolean).every((term) => text.includes(term.replace(/^[-+]/, "")));
 }
 
-async function generateReply(agent: Agent, event: EmailReplyEvent, settings?: import("./types.js").AiProviderSettings, providers?: import("./types.js").AiProviderRuntime[]) {
-  const result = await complete({ model: agent.model || config.defaultModel, settings, providers, messages: [{ role: "system", content: `You are ${agent.name}. ${agent.instructions}\n\nWrite a concise, accurate email reply. Never invent facts. If the email needs a human decision, say that clearly. Return only the email body, without a subject or greeting metadata.` }, { role: "user", content: `Incoming email from ${event.fromEmail ?? "unknown sender"}\nSubject: ${event.subject ?? "(no subject)"}\n\n${event.body}` }], tools: [] });
+async function generateReply(agent: Agent, event: EmailReplyEvent, settings?: import("./types.js").AiProviderSettings, providers?: import("./types.js").AiProviderRuntime[], store?: Store, requestId?: string) {
+  const result = await complete({ model: agent.model || config.defaultModel, settings, providers, store, requestId, messages: [{ role: "system", content: `You are ${agent.name}. ${agent.instructions}\n\nWrite a concise, accurate email reply. Never invent facts. If the email needs a human decision, say that clearly. Return only the email body, without a subject or greeting metadata.` }, { role: "user", content: `Incoming email from ${event.fromEmail ?? "unknown sender"}\nSubject: ${event.subject ?? "(no subject)"}\n\n${event.body}` }], tools: [] });
   const body = result.content.trim().slice(0, MAX_BODY);
   if (!body) throw new Error("The agent generated an empty reply.");
   return { body, inputTokens: result.inputTokens, outputTokens: result.outputTokens, provider: result.provider, model: result.model };
@@ -214,7 +214,7 @@ export async function pollAgentReplies(store: Store, credits: CreditService, age
     try { authorization = await credits.reserve({ requestId: aiRequestId, workspaceId: agent.workspaceId, agentId: agent.id, maximumCredits: 1 }); }
     catch (error) { console.error("[Gbolix email-automation] credit_reservation_failed", JSON.stringify({ agentId: agent.id, workspaceId: agent.workspaceId, eventId: event.id, error: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined })); await store.updateEmailReplyEvent(event.id, agent.id, { status: "failed", error: PUBLIC_EMAIL_ERROR }); continue; }
     try {
-      const generated = await generateReply(agent, event, undefined, aiProviders);
+      const generated = await generateReply(agent, event, undefined, aiProviders, store, aiRequestId);
       if (settings.replyMode === "draft") {
         await credits.finalize(authorization, { requestId: aiRequestId, workspaceId: agent.workspaceId, agentId: agent.id, conversationId: `reply_${event.id}`, credits: 1, model: generated.model || agent.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens, toolCalls: 0 });
         await store.updateEmailReplyEvent(event.id, agent.id, { status: "pending", replyBody: generated.body });
