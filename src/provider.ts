@@ -70,6 +70,22 @@ async function modelCandidates(provider: AiProviderRuntime, requested: string, s
   return [selected || requestedDefault];
 }
 
+export async function runProviderHealthChecks(store: Pick<Store, "listAiProviderSecrets" | "recordAiProviderAttempt">): Promise<void> {
+  const providers = await resolveAiProviders(store);
+  for (const provider of providers ?? []) {
+    const started = Date.now();
+    try {
+      const models = await loadProviderModels(provider);
+      await store.recordAiProviderAttempt({ providerId: provider.id, model: provider.defaultModel || models[0]?.id || "health-check", inputTokens: 0, outputTokens: 0, latencyMs: Date.now() - started, success: models.length > 0, errorCode: models.length ? undefined : "NO_LIVE_MODELS" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const rateLimited = /429|rate.?limit/i.test(message);
+      const quotaError = /quota|billing|insufficient/i.test(message);
+      await store.recordAiProviderAttempt({ providerId: provider.id, model: provider.defaultModel || "health-check", inputTokens: 0, outputTokens: 0, latencyMs: Date.now() - started, success: false, rateLimited, quotaError, errorCode: rateLimited ? "RATE_LIMITED" : quotaError ? "QUOTA_EXCEEDED" : "HEALTH_CHECK_FAILED" });
+    }
+  }
+}
+
 export async function complete(input: { model: string; messages: ChatMessage[]; tools?: ToolDefinition[]; settings?: AiProviderSettings; providers?: AiProviderRuntime[]; store?: Pick<Store, "reserveAiProviderCapacity" | "finalizeAiProviderReservation" | "recordAiProviderAttempt">; requestId?: string }): Promise<Completion> {
   const providers = providerOrder(input.settings, input.providers !== undefined ? input.providers : environmentProviders(), input.requestId);
   if (!providers.length) return fallbackCompletion(input.messages);
